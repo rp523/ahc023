@@ -3510,6 +3510,12 @@ impl Solver {
                 g0[nx].push((y, x));
             }
         }
+        let mut rng = ChaChaRng::from_seed([0; 32]);
+        for g0 in g0.iter_mut() {
+            for g0 in g0.iter_mut() {
+                g0.shuffle(&mut rng);
+            }
+        }
         let mut crops = vec![vec![]; t];
         let mut dues = vec![];
         for ki in 0..read::<usize>() {
