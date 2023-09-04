@@ -1,13 +1,14 @@
 #![allow(unused_macros, unused_imports, dead_code)]
 use permutohedron::LexicalPermutation;
+use rand::Rng;
+use rand::{seq::SliceRandom, SeedableRng};
+use rand_chacha::ChaChaRng;
 use std::any::TypeId;
 use std::cmp::{max, min, Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::mem::swap;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, Sub, SubAssign};
 use std::time::Instant;
-use rand::{seq::SliceRandom, SeedableRng};
-use rand_chacha::ChaChaRng;
 //let mut rng = ChaChaRng::from_seed([0; 32]);
 
 macro_rules! __debug_impl {
@@ -3467,6 +3468,412 @@ use procon_reader::*;
 //////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 
+struct Solver {
+    time0: Instant,
+    t: usize,
+    h: usize,
+    w: usize,
+    y0: usize,
+    x0: usize,
+    g: Vec<Vec<Vec<(usize, usize)>>>,
+    crops: Vec<Vec<(usize, usize)>>,
+    dues: Vec<usize>,
+    depth: Vec<Vec<usize>>,
+    depth_max: usize,
+    parent: Vec<Vec<Option<(usize, usize)>>>,
+}
+impl Solver {
+    fn new() -> Self {
+        let t = read::<usize>();
+        let h = read::<usize>();
+        let w = read::<usize>();
+        let y0 = read::<usize>();
+        let x0 = 0;
+        let mut g0 = vec![vec![vec![]; h]; w];
+        for y in 0..(h - 1) {
+            let ny = y + 1;
+            for (x, c) in read::<String>().chars().enumerate() {
+                if c == '1' {
+                    continue;
+                }
+                g0[y][x].push((ny, x));
+                g0[ny][x].push((y, x));
+            }
+        }
+        for (y, g0) in g0.iter_mut().enumerate() {
+            for (x, c) in read::<String>().chars().enumerate() {
+                if c == '1' {
+                    continue;
+                }
+                let nx = x + 1;
+                g0[x].push((y, nx));
+                g0[nx].push((y, x));
+            }
+        }
+        let mut crops = vec![vec![]; t];
+        let mut dues = vec![];
+        for ki in 0..read::<usize>() {
+            let s = read::<usize>() - 1;
+            let d = read::<usize>() - 1;
+            crops[s].push((ki, d));
+            dues.push(d);
+        }
+        let mut g = vec![vec![vec![]; w]; h];
+        let mut parent = vec![vec![None; w]; h];
+        let mut depth = vec![vec![0; w]; h];
+        Self::initial_bfs(h, w, y0, x0, &g0, &mut g, &mut depth, &mut parent);
+        let depth_max = *depth
+            .iter()
+            .map(|row| row.iter().max().unwrap())
+            .max()
+            .unwrap();
+        Self {
+            time0: Instant::now(),
+            t,
+            h,
+            w,
+            y0,
+            x0,
+            g,
+            crops,
+            dues,
+            depth,
+            depth_max,
+            parent,
+        }
+    }
+    #[allow(clippy::type_complexity)]
+    fn initial_bfs(
+        h: usize,
+        w: usize,
+        y0: usize,
+        x0: usize,
+        g0: &[Vec<Vec<(usize, usize)>>],
+        g: &mut [Vec<Vec<(usize, usize)>>],
+        depth: &mut [Vec<usize>],
+        parent: &mut [Vec<Option<(usize, usize)>>],
+    ) {
+        for row in depth.iter_mut() {
+            for v in row.iter_mut() {
+                *v = h * w * 2;
+            }
+        }
+        let mut que = VecDeque::new();
+        que.push_back((y0, x0));
+        depth[y0][x0] = 0;
+        let mut uf = UnionFind::new(h * w);
+        while let Some((y, x)) = que.pop_front() {
+            let nd = depth[y][x] + 1;
+            for (ny, nx) in g0[y][x].iter().copied() {
+                if depth[ny][nx].chmin(nd) {
+                    que.push_back((ny, nx));
+                    g[y][x].push((ny, nx));
+                    parent[ny][nx] = Some((y, x));
+                    let u = y * w + x;
+                    let v = ny * w + nx;
+                    debug_assert!(!uf.same(u, v));
+                    uf.unite(u, v);
+                }
+            }
+        }
+        debug_assert!(uf.group_num() == 1);
+    }
+    fn init_terminals(&self, y: usize, x: usize, terminals: &mut [BTreeMap<(usize, usize), usize>]) {
+        let mut has_child = false;
+        for &(ny, nx) in self.g[y][x].iter() {
+            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
+            debug_assert!(self.depth[ny][nx] > self.depth[y][x]);
+            self.init_terminals(ny, nx, terminals);
+            has_child = true;
+        }
+        if !has_child { 
+            terminals[self.depth[y][x]].insert((y, x), self.t);
+        }
+    }
+    fn answer(&self, ans: &[(usize, usize, usize, usize)]) {
+        let mut score = 0;
+        println!("{}", ans.len());
+        for (ki, y, x, s) in ans {
+            println!("{} {} {} {}", ki + 1, y, x, s + 1);
+            if cfg!(debug_assertions) {
+                let d = self.dues[*ki];
+                score += d - s + 1;
+            }
+        }
+        if cfg!(debug_assertions) {
+            eprintln!("{}", (1e6 as usize * score) / (self.h * self.w * self.h));
+        }
+    }
+    fn harvest_dfs(
+        &self,
+        y: usize,
+        x: usize,
+        now: usize,
+        filled_due: &mut [Vec<Option<usize>>],
+        terminals: &mut [BTreeMap<(usize, usize), usize>],
+        vis: &mut [Vec<bool>],
+    ) {
+        debug_assert!(!vis[y][x]);
+        vis[y][x] = true;
+        if let Some(al_due) = filled_due[y][x] {
+            if now < al_due {
+                return;
+            } else if now == al_due {
+                filled_due[y][x] = None;
+                debug_assert!(!terminals[self.depth[y][x]].contains_key(&(y, x)));
+            } else {
+                unreachable!();
+            }
+        }
+        debug_assert!(filled_due[y][x].is_none());
+        let mut empty_child_any = false;
+        let mut child_due_min = None;
+        for &(ny, nx) in self.g[y][x].iter() {
+            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
+            debug_assert!(self.depth[ny][nx] > self.depth[y][x]);
+            self.harvest_dfs(ny, nx, now, filled_due, terminals, vis);
+            if let Some(child_due) = filled_due[ny][nx] {
+                child_due_min.chmin(child_due);
+            } else {
+                empty_child_any = true;
+                // breaking is prohibied.
+            }
+        }
+        let di = self.depth[y][x];
+        if !empty_child_any {
+            // should be terminal
+            if cfg!(debug_assertions) {
+                for (cy, cx) in self.g[y][x].iter().copied() {
+                    debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                }
+            }
+            if let Some(child_due_min) = child_due_min {
+                terminals[di].insert((y, x), child_due_min);
+            } else {
+                terminals[di].insert((y, x), self.t);
+            }
+        } else {
+            terminals[di].remove(&(y, x));
+        }
+        if cfg!(debug_assertions) {
+            if (y == self.y0) && (x == self.x0) {
+                for y in 0..self.h {
+                    for x in 0..self.w {
+                        if let Some(f) = filled_due[y][x] {
+                            debug_assert!(f > now);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn show_terminal(&self, terminal: &[BTreeMap<(usize, usize), usize>]) {
+        return;
+        let yrate = 2;
+        let xrate = 3;
+        let text_h = self.h * yrate + 1;
+        let text_w = self.w * xrate + 1;
+        let mut text = vec![vec![' '; text_w]; text_h];
+        // |
+        for x in 0..=self.w {
+            let lx = x * xrate;
+            for ly in 0..text_h {
+                text[ly][lx] = '|';
+            }
+        }
+        // -
+        for y in 0..=self.h {
+            let ly = y * yrate;
+            for lx in 0..text_w {
+                text[ly][lx] = '-';
+            }
+        }
+        // +
+        for y in 0..=self.h {
+            let ly = y * yrate;
+            for x in 0..=self.w {
+                let lx = x * xrate;
+                text[ly][lx] = '+';
+            }
+        }
+        for y in 0..self.h {
+            for x in 0..self.w {
+                for ry in 1..yrate {
+                    for rx in 1..xrate {
+                        if let Some(&terminal) = terminal[self.depth[y][x]].get(&(y, x)) {
+                            let val = (terminal / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
+                            text[yrate * y + ry][xrate * x + rx] = (b'0' + val as u8) as char;
+                        }
+                    }
+                }
+            }
+        }
+        for line in text {
+            eprintln!("{}", line.into_iter().collect::<String>());
+        }
+    }
+    fn show_filled_due(&self, filled_due: &[Vec<Option<usize>>]) {
+        return;
+        let yrate = 2;
+        let xrate = 3;
+        let text_h = self.h * yrate + 1;
+        let text_w = self.w * xrate + 1;
+        let mut text = vec![vec![' '; text_w]; text_h];
+        // |
+        for x in 0..=self.w {
+            let lx = x * xrate;
+            for ly in 0..text_h {
+                text[ly][lx] = '|';
+            }
+        }
+        // -
+        for y in 0..=self.h {
+            let ly = y * yrate;
+            for lx in 0..text_w {
+                text[ly][lx] = '-';
+            }
+        }
+        // +
+        for y in 0..=self.h {
+            let ly = y * yrate;
+            for x in 0..=self.w {
+                let lx = x * xrate;
+                text[ly][lx] = '+';
+            }
+        }
+        for y in 0..self.h {
+            for x in 0..self.w {
+                for ry in 1..yrate {
+                    for rx in 1..xrate {
+                        if let Some(filled_due) = filled_due[y][x] {
+                            let val = (filled_due / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
+                            text[yrate * y + ry][xrate * x + rx] = (b'0' + val as u8) as char;
+                        }
+                    }
+                }
+            }
+        }
+        for line in text {
+            eprintln!("{}", line.into_iter().collect::<String>());
+        }
+    }
+    fn solve(&self) {
+        let mut ans = vec![];
+        let mut terminals = vec![BTreeMap::new(); self.depth_max + 1];
+        self.init_terminals(self.y0, self.x0, &mut terminals);
+        let dsig = max(1, self.depth_max / 1);
+        let mut filled_due = vec![vec![None; self.w]; self.h];
+        for s in 0..self.t {
+            let rem = (self.t - s) as f64;
+            // plant
+            for &(ki, due) in self.crops[s].iter() {
+                debug_assert!(s < due);
+                let drate = (due - s + 1) as f64 / rem;
+                debug_assert!((0.0..=1.0).contains(&drate));
+                let dc = min((self.depth_max as f64 * drate) as usize, self.depth_max);
+                let dmin = dc - min(dc, dsig);
+                let dmax = min(dc + dsig, self.depth_max);
+                let mut delta_min = None;
+                let mut plant = None;
+                for (di, terminals) in terminals.iter().enumerate().take(dmax + 1).skip(dmin) {
+                    for (&(ty, tx), &due_min) in terminals.iter() {
+                        debug_assert!(filled_due[ty][tx].is_none());
+                        if due_min <= due {
+                            continue;
+                        }
+                        let delta = (self.depth[ty][tx] as i64 - di as i64).abs();
+                        if delta_min.chmin(delta) {
+                            plant = Some((ty, tx));
+                        }
+                    }
+                }
+                if let Some((to_y, to_x)) = plant {
+                    ans.push((ki, to_y, to_x, s));
+                    if cfg!(debug_assertions) {
+                        //self.answer(&ans);
+                    }
+                    if cfg!(debug_assertions) {
+                        let mut que = VecDeque::new();
+                        que.push_back((to_y, to_x));
+                        let mut vis = vec![vec![false; self.w]; self.h];
+                        vis[to_y][to_x] = true;
+                        while let Some((y, x)) = que.pop_front() {
+                            if let Some(f) = filled_due[y][x] {
+                                debug_assert!(f >= s);
+                                debug_assert!(f >= due);
+                            }
+                            for (ny, nx) in self.g[y][x].iter().copied() {
+                                debug_assert!(!vis[ny][nx]);
+                                vis[ny][nx] = true;
+                                que.push_back((ny, nx));
+                            }
+                        }
+                        for (cy, cx) in self.g[to_y][to_x].iter().copied() {
+                            debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                        }
+                    }
+                    filled_due[to_y][to_x] = Some(due);
+                    debug_assert!(terminals[self.depth[to_y][to_x]].contains_key(&(to_y, to_x)));
+                    terminals[self.depth[to_y][to_x]].remove(&(to_y, to_x));
+                    if let Some((py, px)) = self.parent[to_y][to_x] {
+                        debug_assert!(self.g[py][px].len() > 0);
+                        let mut empty_child_any = false;
+                        let mut child_due_min = None;
+                        for &(cy, cx) in self.g[py][px].iter() {
+                            debug_assert!(self.depth[cy][cx] > self.depth[py][px]);
+                            if let Some(child_due) = filled_due[cy][cx] {
+                                debug_assert!(child_due >= s);
+                                child_due_min.chmin(child_due);
+                            } else {
+                                empty_child_any = true;
+                                break;
+                            }
+                        }
+                        if !empty_child_any {
+                            let child_due_min = child_due_min.unwrap();
+                            if child_due_min != s {
+                                if cfg!(debug_assertions) {
+                                    for (cy, cx) in self.g[py][px].iter().copied() {
+                                        debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                                    }
+                                    if let Some((py, px)) = self.parent[py][px] {
+                                        debug_assert!(!terminals[self.depth[py][px]].contains_key(&(py, px)));
+                                    }
+                                }
+                                let pd = self.depth[py][px];
+                                debug_assert!(!terminals[pd].contains_key(&(py, px)));
+                                terminals[pd].insert((py, px), child_due_min);
+                            }
+                        }
+                    }
+                    if cfg!(debug_assertions) {
+                        let mut que = VecDeque::new();
+                        que.push_back((self.y0, self.x0));
+                        let mut vis = vec![vec![false; self.w]; self.h];
+                        vis[self.y0][self.x0] = true;
+                        while let Some((y, x)) = que.pop_front() {
+                            if let Some(f) = filled_due[y][x] {
+                                debug_assert!(f >= s);
+                            }
+                            for (ny, nx) in self.g[y][x].iter().copied() {
+                                debug_assert!(!vis[ny][nx]);
+                                vis[ny][nx] = true;
+                                que.push_back((ny, nx));
+                            }
+                        }
+                    }
+                }
+            }
+            self.show_filled_due(&filled_due);
+            self.show_terminal(&terminals);
+            let mut vis = vec![vec![false; self.w]; self.h];
+            self.harvest_dfs(self.y0, self.x0, s, &mut filled_due, &mut terminals, &mut vis);
+            self.show_filled_due(&filled_due);
+            self.show_terminal(&terminals);
+        }
+        self.answer(&ans);
+    }
+}
 fn main() {
-
+    Solver::new().solve();
 }

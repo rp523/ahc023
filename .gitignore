@@ -1,3 +1,7 @@
 /target
 Cargo.lock
 /tools
+vis
+vis.html
+scan
+*.txt
