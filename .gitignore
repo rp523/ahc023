@@ -1,7 +1,7 @@
 /target
 Cargo.lock
 /tools
-vis
-vis.html
+vis*
 scan
 *.txt
+*.exe

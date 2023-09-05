@@ -3475,12 +3475,9 @@ struct Solver {
     w: usize,
     y0: usize,
     x0: usize,
-    g: Vec<Vec<Vec<(usize, usize)>>>,
+    g0: Vec<Vec<Vec<(usize, usize)>>>,
     crops: Vec<Vec<(usize, usize)>>,
     dues: Vec<usize>,
-    depth: Vec<Vec<usize>>,
-    depth_max: usize,
-    parent: Vec<Vec<Option<(usize, usize)>>>,
 }
 impl Solver {
     fn new() -> Self {
@@ -3524,15 +3521,6 @@ impl Solver {
             crops[s].push((ki, d));
             dues.push(d);
         }
-        let mut g = vec![vec![vec![]; w]; h];
-        let mut parent = vec![vec![None; w]; h];
-        let mut depth = vec![vec![0; w]; h];
-        Self::initial_bfs(h, w, y0, x0, &g0, &mut g, &mut depth, &mut parent);
-        let depth_max = *depth
-            .iter()
-            .map(|row| row.iter().max().unwrap())
-            .max()
-            .unwrap();
         Self {
             time0: Instant::now(),
             t,
@@ -3540,49 +3528,43 @@ impl Solver {
             w,
             y0,
             x0,
-            g,
+            g0,
             crops,
             dues,
-            depth,
-            depth_max,
-            parent,
         }
     }
     #[allow(clippy::type_complexity)]
     fn initial_bfs(
-        h: usize,
-        w: usize,
-        y0: usize,
-        x0: usize,
-        g0: &[Vec<Vec<(usize, usize)>>],
+        &self,
         g: &mut [Vec<Vec<(usize, usize)>>],
         depth: &mut [Vec<usize>],
         parent: &mut [Vec<Option<(usize, usize)>>],
     ) {
         for row in depth.iter_mut() {
             for v in row.iter_mut() {
-                *v = h * w * 2;
+                *v = self.h * self.w * 2;
             }
         }
         let mut que = VecDeque::new();
-        que.push_back((y0, x0));
-        depth[y0][x0] = 0;
-        let mut uf = UnionFind::new(h * w);
+        que.push_back((self.y0, self.x0));
+        depth[self.y0][self.x0] = 0;
+        let mut uf = UnionFind::new(self.h * self.w);
         let deltas = vec![(0, 1), (0, -1), (1, 0), (-1, 0)];
-        let mut stop = vec![vec![false; w]; h];
+        let mut stop = vec![vec![false; self.w]; self.h];
         while let Some((y, x)) = que.pop_front() {
             let nd = depth[y][x] + 1;
-            for (ny, nx) in g0[y][x].iter().copied() {
+            for (ny, nx) in self.g0[y][x].iter().copied() {
                 if depth[ny][nx].chmin(nd) {
                     g[y][x].push((ny, nx));
                     parent[ny][nx] = Some((y, x));
-                    let u = y * w + x;
-                    let v = ny * w + nx;
+                    let u = y * self.w + x;
+                    let v = ny * self.w + nx;
                     debug_assert!(!uf.same(u, v));
                     uf.unite(u, v);
-                    if ny != 0 && ny != h - 1 && nx != 0 && nx != w - 1 {
+                    if ny != 0 && ny != self.h - 1 && nx != 0 && nx != self.w - 1 {
                         let mut should_skip = true;
                         let mut around_stop = 0;
+                        #[allow(clippy::needless_range_loop)]
                         'around: for yin0 in (ny - 1)..=(ny + 1) {
                             for xin0 in (nx - 1)..=(nx + 1) {
                                 if stop[yin0][xin0] {
@@ -3591,7 +3573,7 @@ impl Solver {
                                 for (dy, dx) in deltas.iter().copied() {
                                     if let Some(yin1) = yin0.move_delta(dy, ny - 1, ny + 1) {
                                         if let Some(xin1) = xin0.move_delta(dx, nx - 1, nx + 1) {
-                                            if !g0[yin0][xin0].contains(&(yin1, xin1)) {
+                                            if !self.g0[yin0][xin0].contains(&(yin1, xin1)) {
                                                 should_skip = false;
                                                 break 'around;
                                             }
@@ -3615,17 +3597,19 @@ impl Solver {
         &self,
         y: usize,
         x: usize,
+        g: &[Vec<Vec<(usize, usize)>>],
+        depth: &[Vec<usize>],
         terminals: &mut [BTreeMap<(usize, usize), usize>],
     ) {
         let mut has_child = false;
-        for &(ny, nx) in self.g[y][x].iter() {
+        for &(ny, nx) in g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(self.depth[ny][nx] > self.depth[y][x]);
-            self.init_terminals(ny, nx, terminals);
+            debug_assert!(depth[ny][nx] > depth[y][x]);
+            self.init_terminals(ny, nx, g, depth, terminals);
             has_child = true;
         }
         if !has_child {
-            terminals[self.depth[y][x]].insert((y, x), self.t);
+            terminals[depth[y][x]].insert((y, x), self.t);
         }
     }
     fn answer(&self, ans: &[(usize, usize, usize, usize)]) {
@@ -3647,6 +3631,8 @@ impl Solver {
         y: usize,
         x: usize,
         now: usize,
+        g: &[Vec<Vec<(usize, usize)>>],
+        depth: &[Vec<usize>],
         filled_due: &mut [Vec<Option<usize>>],
         terminals: &mut [BTreeMap<(usize, usize), usize>],
         vis: &mut [Vec<bool>],
@@ -3654,22 +3640,26 @@ impl Solver {
         debug_assert!(!vis[y][x]);
         vis[y][x] = true;
         if let Some(al_due) = filled_due[y][x] {
-            if now < al_due {
-                return;
-            } else if now == al_due {
-                filled_due[y][x] = None;
-                debug_assert!(!terminals[self.depth[y][x]].contains_key(&(y, x)));
-            } else {
-                unreachable!();
+            match now.cmp(&al_due) {
+                Ordering::Less => {
+                    return;
+                }
+                Ordering::Equal => {
+                    filled_due[y][x] = None;
+                    debug_assert!(!terminals[depth[y][x]].contains_key(&(y, x)));
+                }
+                Ordering::Greater => {
+                    unreachable!();
+                }
             }
         }
         debug_assert!(filled_due[y][x].is_none());
         let mut empty_child_any = false;
         let mut child_due_min = None;
-        for &(ny, nx) in self.g[y][x].iter() {
+        for &(ny, nx) in g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(self.depth[ny][nx] > self.depth[y][x]);
-            self.harvest_dfs(ny, nx, now, filled_due, terminals, vis);
+            debug_assert!(depth[ny][nx] > depth[y][x]);
+            self.harvest_dfs(ny, nx, now, g, depth, filled_due, terminals, vis);
             if let Some(child_due) = filled_due[ny][nx] {
                 child_due_min.chmin(child_due);
             } else {
@@ -3677,12 +3667,12 @@ impl Solver {
                 // breaking is prohibied.
             }
         }
-        let di = self.depth[y][x];
+        let di = depth[y][x];
         if !empty_child_any {
             // should be terminal
             if cfg!(debug_assertions) {
-                for (cy, cx) in self.g[y][x].iter().copied() {
-                    debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                for (cy, cx) in g[y][x].iter().copied() {
+                    debug_assert!(!terminals[depth[cy][cx]].contains_key(&(cy, cx)));
                 }
             }
             if let Some(child_due_min) = child_due_min {
@@ -3693,20 +3683,15 @@ impl Solver {
         } else {
             terminals[di].remove(&(y, x));
         }
-        if cfg!(debug_assertions) {
-            if (y == self.y0) && (x == self.x0) {
-                for y in 0..self.h {
-                    for x in 0..self.w {
-                        if let Some(f) = filled_due[y][x] {
-                            debug_assert!(f > now);
-                        }
-                    }
+        if cfg!(debug_assertions) && (y == self.y0) && (x == self.x0) {
+            for filled_due in filled_due.iter() {
+                for &f in filled_due.iter().flatten() {
+                    debug_assert!(f > now);
                 }
             }
         }
     }
-    fn show_terminal(&self, terminal: &[BTreeMap<(usize, usize), usize>]) {
-        return;
+    fn show_terminal(&self, depth: &[Vec<usize>], terminal: &[BTreeMap<(usize, usize), usize>]) {
         let yrate = 2;
         let xrate = 3;
         let text_h = self.h * yrate + 1;
@@ -3715,8 +3700,8 @@ impl Solver {
         // |
         for x in 0..=self.w {
             let lx = x * xrate;
-            for ly in 0..text_h {
-                text[ly][lx] = '|';
+            for text in text.iter_mut() {
+                text[lx] = '|';
             }
         }
         // -
@@ -3738,7 +3723,7 @@ impl Solver {
             for x in 0..self.w {
                 for ry in 1..yrate {
                     for rx in 1..xrate {
-                        if let Some(&terminal) = terminal[self.depth[y][x]].get(&(y, x)) {
+                        if let Some(&terminal) = terminal[depth[y][x]].get(&(y, x)) {
                             let val = (terminal / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
                             text[yrate * y + ry][xrate * x + rx] = (b'0' + val as u8) as char;
                         }
@@ -3751,7 +3736,6 @@ impl Solver {
         }
     }
     fn show_filled_due(&self, filled_due: &[Vec<Option<usize>>]) {
-        return;
         let yrate = 2;
         let xrate = 3;
         let text_h = self.h * yrate + 1;
@@ -3760,8 +3744,8 @@ impl Solver {
         // |
         for x in 0..=self.w {
             let lx = x * xrate;
-            for ly in 0..text_h {
-                text[ly][lx] = '|';
+            for text in text.iter_mut() {
+                text[lx] = '|';
             }
         }
         // -
@@ -3797,9 +3781,18 @@ impl Solver {
     }
     fn solve(&self) {
         let mut ans = vec![];
-        let mut terminals = vec![BTreeMap::new(); self.depth_max + 1];
-        self.init_terminals(self.y0, self.x0, &mut terminals);
-        let dsig = max(1, self.depth_max / 1);
+        let mut parent = vec![vec![None; self.w]; self.h];
+        let mut depth = vec![vec![0; self.w]; self.h];
+        let mut g = vec![vec![vec![]; self.w]; self.h];
+        self.initial_bfs(&mut g, &mut depth, &mut parent);
+        let &depth_max = depth
+            .iter()
+            .map(|row| row.iter().max().unwrap())
+            .max()
+            .unwrap();
+        let mut terminals = vec![BTreeMap::new(); depth_max + 1];
+        self.init_terminals(self.y0, self.x0, &g, &depth, &mut terminals);
+        let dsig = max(1, depth_max);
         let mut filled_due = vec![vec![None; self.w]; self.h];
         for s in 0..self.t {
             let rem = (self.t - s) as f64;
@@ -3808,9 +3801,9 @@ impl Solver {
                 debug_assert!(s < due);
                 let drate = (due - s + 1) as f64 / rem;
                 debug_assert!((0.0..=1.0).contains(&drate));
-                let dc = min((self.depth_max as f64 * drate) as usize, self.depth_max);
+                let dc = min((depth_max as f64 * drate) as usize, depth_max);
                 let dmin = dc - min(dc, dsig);
-                let dmax = min(dc + dsig, self.depth_max);
+                let dmax = min(dc + dsig, depth_max);
                 let mut delta_min = None;
                 let mut plant = None;
                 for (di, terminals) in terminals.iter().enumerate().take(dmax + 1).skip(dmin) {
@@ -3819,7 +3812,7 @@ impl Solver {
                         if due_min <= due {
                             continue;
                         }
-                        let delta = (self.depth[ty][tx] as i64 - di as i64).abs();
+                        let delta = (depth[ty][tx] as i64 - di as i64).abs();
                         if delta_min.chmin(delta) {
                             plant = Some((ty, tx));
                         }
@@ -3840,25 +3833,25 @@ impl Solver {
                                 debug_assert!(f >= s);
                                 debug_assert!(f >= due);
                             }
-                            for (ny, nx) in self.g[y][x].iter().copied() {
+                            for (ny, nx) in g[y][x].iter().copied() {
                                 debug_assert!(!vis[ny][nx]);
                                 vis[ny][nx] = true;
                                 que.push_back((ny, nx));
                             }
                         }
-                        for (cy, cx) in self.g[to_y][to_x].iter().copied() {
-                            debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                        for (cy, cx) in g[to_y][to_x].iter().copied() {
+                            debug_assert!(!terminals[depth[cy][cx]].contains_key(&(cy, cx)));
                         }
                     }
                     filled_due[to_y][to_x] = Some(due);
-                    debug_assert!(terminals[self.depth[to_y][to_x]].contains_key(&(to_y, to_x)));
-                    terminals[self.depth[to_y][to_x]].remove(&(to_y, to_x));
-                    if let Some((py, px)) = self.parent[to_y][to_x] {
-                        debug_assert!(self.g[py][px].len() > 0);
+                    debug_assert!(terminals[depth[to_y][to_x]].contains_key(&(to_y, to_x)));
+                    terminals[depth[to_y][to_x]].remove(&(to_y, to_x));
+                    if let Some((py, px)) = parent[to_y][to_x] {
+                        debug_assert!(!g[py][px].is_empty());
                         let mut empty_child_any = false;
                         let mut child_due_min = None;
-                        for &(cy, cx) in self.g[py][px].iter() {
-                            debug_assert!(self.depth[cy][cx] > self.depth[py][px]);
+                        for &(cy, cx) in g[py][px].iter() {
+                            debug_assert!(depth[cy][cx] > depth[py][px]);
                             if let Some(child_due) = filled_due[cy][cx] {
                                 debug_assert!(child_due >= s);
                                 child_due_min.chmin(child_due);
@@ -3871,18 +3864,18 @@ impl Solver {
                             let child_due_min = child_due_min.unwrap();
                             if child_due_min != s {
                                 if cfg!(debug_assertions) {
-                                    for (cy, cx) in self.g[py][px].iter().copied() {
+                                    for (cy, cx) in g[py][px].iter().copied() {
                                         debug_assert!(
-                                            !terminals[self.depth[cy][cx]].contains_key(&(cy, cx))
+                                            !terminals[depth[cy][cx]].contains_key(&(cy, cx))
                                         );
                                     }
-                                    if let Some((py, px)) = self.parent[py][px] {
+                                    if let Some((py, px)) = parent[py][px] {
                                         debug_assert!(
-                                            !terminals[self.depth[py][px]].contains_key(&(py, px))
+                                            !terminals[depth[py][px]].contains_key(&(py, px))
                                         );
                                     }
                                 }
-                                let pd = self.depth[py][px];
+                                let pd = depth[py][px];
                                 debug_assert!(!terminals[pd].contains_key(&(py, px)));
                                 terminals[pd].insert((py, px), child_due_min);
                             }
@@ -3897,7 +3890,7 @@ impl Solver {
                             if let Some(f) = filled_due[y][x] {
                                 debug_assert!(f >= s);
                             }
-                            for (ny, nx) in self.g[y][x].iter().copied() {
+                            for (ny, nx) in g[y][x].iter().copied() {
                                 debug_assert!(!vis[ny][nx]);
                                 vis[ny][nx] = true;
                                 que.push_back((ny, nx));
@@ -3906,19 +3899,17 @@ impl Solver {
                     }
                 }
             }
-            self.show_filled_due(&filled_due);
-            self.show_terminal(&terminals);
             let mut vis = vec![vec![false; self.w]; self.h];
             self.harvest_dfs(
                 self.y0,
                 self.x0,
                 s,
+                &g,
+                &depth,
                 &mut filled_due,
                 &mut terminals,
                 &mut vis,
             );
-            self.show_filled_due(&filled_due);
-            self.show_terminal(&terminals);
         }
         self.answer(&ans);
     }
