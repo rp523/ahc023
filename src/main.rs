@@ -3611,24 +3611,6 @@ impl Solver {
             dues,
         }
     }
-    fn init_terminals(
-        &self,
-        y: usize,
-        x: usize,
-        bfs_tree: &BfsTree,
-        terminals: &mut [BTreeMap<(usize, usize), usize>],
-    ) {
-        let mut has_child = false;
-        for &(ny, nx) in bfs_tree.g[y][x].iter() {
-            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
-            self.init_terminals(ny, nx, bfs_tree, terminals);
-            has_child = true;
-        }
-        if !has_child {
-            terminals[bfs_tree.depth[y][x]].insert((y, x), self.t);
-        }
-    }
     fn answer(&self, ans: &[(usize, usize, usize, usize)]) {
         let mut score = 0;
         println!("{}", ans.len());
@@ -3643,6 +3625,47 @@ impl Solver {
             eprintln!("{}", (1e6 as usize * score) / (self.h * self.w * self.t));
         }
     }
+    fn calc_plant_cands(
+        &self,
+        y: usize,
+        x: usize,
+        bfs_tree: &BfsTree,
+        filled_due: &[Vec<Option<usize>>],
+        plant_cands: &mut Vec<((usize, usize), usize)>,
+    ) {
+        if y == self.y0 && x == self.x0 {
+            plant_cands.clear();
+        }
+        if filled_due[y][x].is_some() {
+            return;
+        }
+        let mut empty_child_any = false;
+        let mut child_due_min = None;
+        for &(ny, nx) in bfs_tree.g[y][x].iter() {
+            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
+            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
+            self.calc_plant_cands(ny, nx, bfs_tree, filled_due, plant_cands);
+            if let Some(child_due) = filled_due[ny][nx] {
+                child_due_min.chmin(child_due);
+            } else {
+                empty_child_any = true;
+                // breaking is prohibied.
+            }
+        }
+        if !empty_child_any {
+            // should be plant_cand
+            if cfg!(debug_assertions) {
+                for &((ay, ax), _) in plant_cands.iter() {
+                    debug_assert!(ay != y && ax != x);
+                }
+            }
+            if let Some(child_due_min) = child_due_min {
+                plant_cands.push(((y, x), child_due_min));
+            } else {
+                plant_cands.push(((y, x), self.t));
+            }
+        }
+    }
     fn harvest_dfs(
         &self,
         y: usize,
@@ -3650,7 +3673,6 @@ impl Solver {
         now: usize,
         bfs_tree: &BfsTree,
         filled_due: &mut [Vec<Option<usize>>],
-        terminals: &mut [BTreeMap<(usize, usize), usize>],
     ) {
         if let Some(al_due) = filled_due[y][x] {
             match now.cmp(&al_due) {
@@ -3659,7 +3681,6 @@ impl Solver {
                 }
                 Ordering::Equal => {
                     filled_due[y][x] = None;
-                    debug_assert!(!terminals[bfs_tree.depth[y][x]].contains_key(&(y, x)));
                 }
                 Ordering::Greater => {
                     unreachable!();
@@ -3667,34 +3688,10 @@ impl Solver {
             }
         }
         debug_assert!(filled_due[y][x].is_none());
-        let mut empty_child_any = false;
-        let mut child_due_min = None;
         for &(ny, nx) in bfs_tree.g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
             debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
-            self.harvest_dfs(ny, nx, now, bfs_tree, filled_due, terminals);
-            if let Some(child_due) = filled_due[ny][nx] {
-                child_due_min.chmin(child_due);
-            } else {
-                empty_child_any = true;
-                // breaking is prohibied.
-            }
-        }
-        let di = bfs_tree.depth[y][x];
-        if !empty_child_any {
-            // should be terminal
-            if cfg!(debug_assertions) {
-                for (cy, cx) in bfs_tree.g[y][x].iter().copied() {
-                    debug_assert!(!terminals[bfs_tree.depth[cy][cx]].contains_key(&(cy, cx)));
-                }
-            }
-            if let Some(child_due_min) = child_due_min {
-                terminals[di].insert((y, x), child_due_min);
-            } else {
-                terminals[di].insert((y, x), self.t);
-            }
-        } else {
-            terminals[di].remove(&(y, x));
+            self.harvest_dfs(ny, nx, now, bfs_tree, filled_due);
         }
         if cfg!(debug_assertions) && (y == self.y0) && (x == self.x0) {
             for filled_due in filled_due.iter() {
@@ -3704,7 +3701,11 @@ impl Solver {
             }
         }
     }
-    fn show_terminal(&self, depth: &[Vec<usize>], terminal: &[BTreeMap<(usize, usize), usize>]) {
+    fn show_plant_cand(
+        &self,
+        depth: &[Vec<usize>],
+        plant_cand: &[BTreeMap<(usize, usize), usize>],
+    ) {
         let yrate = 2;
         let xrate = 3;
         let text_h = self.h * yrate + 1;
@@ -3736,8 +3737,8 @@ impl Solver {
             for x in 0..self.w {
                 for ry in 1..yrate {
                     for rx in 1..xrate {
-                        if let Some(&terminal) = terminal[depth[y][x]].get(&(y, x)) {
-                            let val = (terminal / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
+                        if let Some(&plant_cand) = plant_cand[depth[y][x]].get(&(y, x)) {
+                            let val = (plant_cand / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
                             text[yrate * y + ry][xrate * x + rx] = (b'0' + val as u8) as char;
                         }
                     }
@@ -3795,10 +3796,9 @@ impl Solver {
     fn solve(&self) {
         let mut ans = vec![];
         let bfs_tree = BfsTree::new(self.h, self.w, self.y0, self.x0, &self.g0);
-        let mut terminals = vec![BTreeMap::new(); bfs_tree.depth_max + 1];
-        self.init_terminals(self.y0, self.x0, &bfs_tree, &mut terminals);
-        let dsig = max(1, bfs_tree.depth_max);
         let mut filled_due = vec![vec![None; self.w]; self.h];
+        let mut plant_cands = vec![];
+        self.calc_plant_cands(self.y0, self.x0, &bfs_tree, &filled_due, &mut plant_cands);
         for s in 0..self.t {
             let rem = (self.t - s) as f64;
             // plant
@@ -3810,20 +3810,17 @@ impl Solver {
                     (bfs_tree.depth_max as f64 * drate) as usize,
                     bfs_tree.depth_max,
                 );
-                let dmin = dc - min(dc, dsig);
-                let dmax = min(dc + dsig, bfs_tree.depth_max);
                 let mut delta_min = None;
                 let mut plant = None;
-                for (di, terminals) in terminals.iter().enumerate().take(dmax + 1).skip(dmin) {
-                    for (&(ty, tx), &due_min) in terminals.iter() {
-                        debug_assert!(filled_due[ty][tx].is_none());
-                        if due_min <= due {
-                            continue;
-                        }
-                        let delta = (bfs_tree.depth[ty][tx] as i64 - di as i64).abs();
-                        if delta_min.chmin(delta) {
-                            plant = Some((ty, tx));
-                        }
+                for &((ty, tx), due_min) in plant_cands.iter() {
+                    debug_assert!(filled_due[ty][tx].is_none());
+                    if due_min <= due {
+                        continue;
+                    }
+                    let di = bfs_tree.depth[ty][tx];
+                    let delta = (bfs_tree.depth[ty][tx] as i64 - di as i64).abs();
+                    if delta_min.chmin(delta) {
+                        plant = Some((ty, tx));
                     }
                 }
                 if let Some((to_y, to_x)) = plant {
@@ -3848,47 +3845,19 @@ impl Solver {
                             }
                         }
                         for (cy, cx) in bfs_tree.g[to_y][to_x].iter().copied() {
-                            debug_assert!(
-                                !terminals[bfs_tree.depth[cy][cx]].contains_key(&(cy, cx))
-                            );
+                            for &((y, x), _) in plant_cands.iter() {
+                                debug_assert!((cy, cx) != (y, x));
+                            }
                         }
                     }
                     filled_due[to_y][to_x] = Some(due);
-                    debug_assert!(terminals[bfs_tree.depth[to_y][to_x]].contains_key(&(to_y, to_x)));
-                    terminals[bfs_tree.depth[to_y][to_x]].remove(&(to_y, to_x));
-                    if let Some((py, px)) = bfs_tree.parent[to_y][to_x] {
-                        debug_assert!(!bfs_tree.g[py][px].is_empty());
-                        let mut empty_child_any = false;
-                        let mut child_due_min = None;
-                        for &(cy, cx) in bfs_tree.g[py][px].iter() {
-                            debug_assert!(bfs_tree.depth[cy][cx] > bfs_tree.depth[py][px]);
-                            if let Some(child_due) = filled_due[cy][cx] {
-                                debug_assert!(child_due >= s);
-                                child_due_min.chmin(child_due);
-                            } else {
-                                empty_child_any = true;
-                                break;
-                            }
-                        }
-                        if !empty_child_any {
-                            let child_due_min = child_due_min.unwrap();
-                            if child_due_min != s {
-                                if cfg!(debug_assertions) {
-                                    for (cy, cx) in bfs_tree.g[py][px].iter().copied() {
-                                        debug_assert!(!terminals[bfs_tree.depth[cy][cx]]
-                                            .contains_key(&(cy, cx)));
-                                    }
-                                    if let Some((py, px)) = bfs_tree.parent[py][px] {
-                                        debug_assert!(!terminals[bfs_tree.depth[py][px]]
-                                            .contains_key(&(py, px)));
-                                    }
-                                }
-                                let pd = bfs_tree.depth[py][px];
-                                debug_assert!(!terminals[pd].contains_key(&(py, px)));
-                                terminals[pd].insert((py, px), child_due_min);
-                            }
-                        }
-                    }
+                    self.calc_plant_cands(
+                        self.y0,
+                        self.x0,
+                        &bfs_tree,
+                        &filled_due,
+                        &mut plant_cands,
+                    );
                     if cfg!(debug_assertions) {
                         let mut que = VecDeque::new();
                         que.push_back((self.y0, self.x0));
@@ -3907,14 +3876,8 @@ impl Solver {
                     }
                 }
             }
-            self.harvest_dfs(
-                self.y0,
-                self.x0,
-                s,
-                &bfs_tree,
-                &mut filled_due,
-                &mut terminals,
-            );
+            self.harvest_dfs(self.y0, self.x0, s, &bfs_tree, &mut filled_due);
+            self.calc_plant_cands(self.y0, self.x0, &bfs_tree, &filled_due, &mut plant_cands);
         }
         self.answer(&ans);
     }
