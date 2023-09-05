@@ -3817,8 +3817,7 @@ impl Solver {
                     if due_min <= due {
                         continue;
                     }
-                    let di = bfs_tree.depth[ty][tx];
-                    let delta = (bfs_tree.depth[ty][tx] as i64 - di as i64).abs();
+                    let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
                     if delta_min.chmin(delta) {
                         plant = Some((ty, tx));
                     }
