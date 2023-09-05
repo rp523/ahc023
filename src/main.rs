@@ -3468,6 +3468,83 @@ use procon_reader::*;
 //////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 
+struct BfsTree {
+    g: Vec<Vec<Vec<(usize, usize)>>>,
+    depth: Vec<Vec<usize>>,
+    depth_max: usize,
+    parent: Vec<Vec<Option<(usize, usize)>>>,
+}
+impl BfsTree {
+    fn new(h: usize, w: usize, y0: usize, x0: usize, g0: &[Vec<Vec<(usize, usize)>>]) -> Self {
+        let mut parent = vec![vec![None; w]; h];
+        let mut depth = vec![vec![0; w]; h];
+        let mut g = vec![vec![vec![]; w]; h];
+
+        for row in depth.iter_mut() {
+            for v in row.iter_mut() {
+                *v = h * w * 2;
+            }
+        }
+        let mut que = VecDeque::new();
+        que.push_back((y0, x0));
+        depth[y0][x0] = 0;
+        let mut uf = UnionFind::new(h * w);
+        let deltas = vec![(0, 1), (0, -1), (1, 0), (-1, 0)];
+        let mut stop = vec![vec![false; w]; h];
+        while let Some((y, x)) = que.pop_front() {
+            let nd = depth[y][x] + 1;
+            for (ny, nx) in g0[y][x].iter().copied() {
+                if depth[ny][nx].chmin(nd) {
+                    g[y][x].push((ny, nx));
+                    parent[ny][nx] = Some((y, x));
+                    let u = y * w + x;
+                    let v = ny * w + nx;
+                    debug_assert!(!uf.same(u, v));
+                    uf.unite(u, v);
+                    if ny != 0 && ny != h - 1 && nx != 0 && nx != w - 1 {
+                        let mut should_skip = true;
+                        let mut around_stop = 0;
+                        #[allow(clippy::needless_range_loop)]
+                        'around: for yin0 in (ny - 1)..=(ny + 1) {
+                            for xin0 in (nx - 1)..=(nx + 1) {
+                                if stop[yin0][xin0] {
+                                    around_stop += 1;
+                                }
+                                for (dy, dx) in deltas.iter().copied() {
+                                    if let Some(yin1) = yin0.move_delta(dy, ny - 1, ny + 1) {
+                                        if let Some(xin1) = xin0.move_delta(dx, nx - 1, nx + 1) {
+                                            if !g0[yin0][xin0].contains(&(yin1, xin1)) {
+                                                should_skip = false;
+                                                break 'around;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if should_skip && around_stop <= 0 {
+                            stop[ny][nx] = true;
+                            continue;
+                        }
+                    }
+                    que.push_back((ny, nx));
+                }
+            }
+        }
+        debug_assert!(uf.group_num() == 1);
+        let &depth_max = depth
+            .iter()
+            .map(|row| row.iter().max().unwrap())
+            .max()
+            .unwrap();
+        Self {
+            g,
+            depth,
+            depth_max,
+            parent,
+        }
+    }
+}
 struct Solver {
     time0: Instant,
     t: usize,
@@ -3481,6 +3558,7 @@ struct Solver {
 }
 impl Solver {
     fn new() -> Self {
+        let time0 = Instant::now();
         let t = read::<usize>();
         let h = read::<usize>();
         let w = read::<usize>();
@@ -3522,7 +3600,7 @@ impl Solver {
             dues.push(d);
         }
         Self {
-            time0: Instant::now(),
+            time0,
             t,
             h,
             w,
@@ -3533,83 +3611,22 @@ impl Solver {
             dues,
         }
     }
-    #[allow(clippy::type_complexity)]
-    fn initial_bfs(
-        &self,
-        g: &mut [Vec<Vec<(usize, usize)>>],
-        depth: &mut [Vec<usize>],
-        parent: &mut [Vec<Option<(usize, usize)>>],
-    ) {
-        for row in depth.iter_mut() {
-            for v in row.iter_mut() {
-                *v = self.h * self.w * 2;
-            }
-        }
-        let mut que = VecDeque::new();
-        que.push_back((self.y0, self.x0));
-        depth[self.y0][self.x0] = 0;
-        let mut uf = UnionFind::new(self.h * self.w);
-        let deltas = vec![(0, 1), (0, -1), (1, 0), (-1, 0)];
-        let mut stop = vec![vec![false; self.w]; self.h];
-        while let Some((y, x)) = que.pop_front() {
-            let nd = depth[y][x] + 1;
-            for (ny, nx) in self.g0[y][x].iter().copied() {
-                if depth[ny][nx].chmin(nd) {
-                    g[y][x].push((ny, nx));
-                    parent[ny][nx] = Some((y, x));
-                    let u = y * self.w + x;
-                    let v = ny * self.w + nx;
-                    debug_assert!(!uf.same(u, v));
-                    uf.unite(u, v);
-                    if ny != 0 && ny != self.h - 1 && nx != 0 && nx != self.w - 1 {
-                        let mut should_skip = true;
-                        let mut around_stop = 0;
-                        #[allow(clippy::needless_range_loop)]
-                        'around: for yin0 in (ny - 1)..=(ny + 1) {
-                            for xin0 in (nx - 1)..=(nx + 1) {
-                                if stop[yin0][xin0] {
-                                    around_stop += 1;
-                                }
-                                for (dy, dx) in deltas.iter().copied() {
-                                    if let Some(yin1) = yin0.move_delta(dy, ny - 1, ny + 1) {
-                                        if let Some(xin1) = xin0.move_delta(dx, nx - 1, nx + 1) {
-                                            if !self.g0[yin0][xin0].contains(&(yin1, xin1)) {
-                                                should_skip = false;
-                                                break 'around;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if should_skip && around_stop <= 0 {
-                            stop[ny][nx] = true;
-                            continue;
-                        }
-                    }
-                    que.push_back((ny, nx));
-                }
-            }
-        }
-        debug_assert!(uf.group_num() == 1);
-    }
     fn init_terminals(
         &self,
         y: usize,
         x: usize,
-        g: &[Vec<Vec<(usize, usize)>>],
-        depth: &[Vec<usize>],
+        bfs_tree: &BfsTree,
         terminals: &mut [BTreeMap<(usize, usize), usize>],
     ) {
         let mut has_child = false;
-        for &(ny, nx) in g[y][x].iter() {
+        for &(ny, nx) in bfs_tree.g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(depth[ny][nx] > depth[y][x]);
-            self.init_terminals(ny, nx, g, depth, terminals);
+            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
+            self.init_terminals(ny, nx, bfs_tree, terminals);
             has_child = true;
         }
         if !has_child {
-            terminals[depth[y][x]].insert((y, x), self.t);
+            terminals[bfs_tree.depth[y][x]].insert((y, x), self.t);
         }
     }
     fn answer(&self, ans: &[(usize, usize, usize, usize)]) {
@@ -3631,14 +3648,10 @@ impl Solver {
         y: usize,
         x: usize,
         now: usize,
-        g: &[Vec<Vec<(usize, usize)>>],
-        depth: &[Vec<usize>],
+        bfs_tree: &BfsTree,
         filled_due: &mut [Vec<Option<usize>>],
         terminals: &mut [BTreeMap<(usize, usize), usize>],
-        vis: &mut [Vec<bool>],
     ) {
-        debug_assert!(!vis[y][x]);
-        vis[y][x] = true;
         if let Some(al_due) = filled_due[y][x] {
             match now.cmp(&al_due) {
                 Ordering::Less => {
@@ -3646,7 +3659,7 @@ impl Solver {
                 }
                 Ordering::Equal => {
                     filled_due[y][x] = None;
-                    debug_assert!(!terminals[depth[y][x]].contains_key(&(y, x)));
+                    debug_assert!(!terminals[bfs_tree.depth[y][x]].contains_key(&(y, x)));
                 }
                 Ordering::Greater => {
                     unreachable!();
@@ -3656,10 +3669,10 @@ impl Solver {
         debug_assert!(filled_due[y][x].is_none());
         let mut empty_child_any = false;
         let mut child_due_min = None;
-        for &(ny, nx) in g[y][x].iter() {
+        for &(ny, nx) in bfs_tree.g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(depth[ny][nx] > depth[y][x]);
-            self.harvest_dfs(ny, nx, now, g, depth, filled_due, terminals, vis);
+            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
+            self.harvest_dfs(ny, nx, now, bfs_tree, filled_due, terminals);
             if let Some(child_due) = filled_due[ny][nx] {
                 child_due_min.chmin(child_due);
             } else {
@@ -3667,12 +3680,12 @@ impl Solver {
                 // breaking is prohibied.
             }
         }
-        let di = depth[y][x];
+        let di = bfs_tree.depth[y][x];
         if !empty_child_any {
             // should be terminal
             if cfg!(debug_assertions) {
-                for (cy, cx) in g[y][x].iter().copied() {
-                    debug_assert!(!terminals[depth[cy][cx]].contains_key(&(cy, cx)));
+                for (cy, cx) in bfs_tree.g[y][x].iter().copied() {
+                    debug_assert!(!terminals[bfs_tree.depth[cy][cx]].contains_key(&(cy, cx)));
                 }
             }
             if let Some(child_due_min) = child_due_min {
@@ -3781,18 +3794,10 @@ impl Solver {
     }
     fn solve(&self) {
         let mut ans = vec![];
-        let mut parent = vec![vec![None; self.w]; self.h];
-        let mut depth = vec![vec![0; self.w]; self.h];
-        let mut g = vec![vec![vec![]; self.w]; self.h];
-        self.initial_bfs(&mut g, &mut depth, &mut parent);
-        let &depth_max = depth
-            .iter()
-            .map(|row| row.iter().max().unwrap())
-            .max()
-            .unwrap();
-        let mut terminals = vec![BTreeMap::new(); depth_max + 1];
-        self.init_terminals(self.y0, self.x0, &g, &depth, &mut terminals);
-        let dsig = max(1, depth_max);
+        let bfs_tree = BfsTree::new(self.h, self.w, self.y0, self.x0, &self.g0);
+        let mut terminals = vec![BTreeMap::new(); bfs_tree.depth_max + 1];
+        self.init_terminals(self.y0, self.x0, &bfs_tree, &mut terminals);
+        let dsig = max(1, bfs_tree.depth_max);
         let mut filled_due = vec![vec![None; self.w]; self.h];
         for s in 0..self.t {
             let rem = (self.t - s) as f64;
@@ -3801,9 +3806,12 @@ impl Solver {
                 debug_assert!(s < due);
                 let drate = (due - s + 1) as f64 / rem;
                 debug_assert!((0.0..=1.0).contains(&drate));
-                let dc = min((depth_max as f64 * drate) as usize, depth_max);
+                let dc = min(
+                    (bfs_tree.depth_max as f64 * drate) as usize,
+                    bfs_tree.depth_max,
+                );
                 let dmin = dc - min(dc, dsig);
-                let dmax = min(dc + dsig, depth_max);
+                let dmax = min(dc + dsig, bfs_tree.depth_max);
                 let mut delta_min = None;
                 let mut plant = None;
                 for (di, terminals) in terminals.iter().enumerate().take(dmax + 1).skip(dmin) {
@@ -3812,7 +3820,7 @@ impl Solver {
                         if due_min <= due {
                             continue;
                         }
-                        let delta = (depth[ty][tx] as i64 - di as i64).abs();
+                        let delta = (bfs_tree.depth[ty][tx] as i64 - di as i64).abs();
                         if delta_min.chmin(delta) {
                             plant = Some((ty, tx));
                         }
@@ -3833,25 +3841,27 @@ impl Solver {
                                 debug_assert!(f >= s);
                                 debug_assert!(f >= due);
                             }
-                            for (ny, nx) in g[y][x].iter().copied() {
+                            for (ny, nx) in bfs_tree.g[y][x].iter().copied() {
                                 debug_assert!(!vis[ny][nx]);
                                 vis[ny][nx] = true;
                                 que.push_back((ny, nx));
                             }
                         }
-                        for (cy, cx) in g[to_y][to_x].iter().copied() {
-                            debug_assert!(!terminals[depth[cy][cx]].contains_key(&(cy, cx)));
+                        for (cy, cx) in bfs_tree.g[to_y][to_x].iter().copied() {
+                            debug_assert!(
+                                !terminals[bfs_tree.depth[cy][cx]].contains_key(&(cy, cx))
+                            );
                         }
                     }
                     filled_due[to_y][to_x] = Some(due);
-                    debug_assert!(terminals[depth[to_y][to_x]].contains_key(&(to_y, to_x)));
-                    terminals[depth[to_y][to_x]].remove(&(to_y, to_x));
-                    if let Some((py, px)) = parent[to_y][to_x] {
-                        debug_assert!(!g[py][px].is_empty());
+                    debug_assert!(terminals[bfs_tree.depth[to_y][to_x]].contains_key(&(to_y, to_x)));
+                    terminals[bfs_tree.depth[to_y][to_x]].remove(&(to_y, to_x));
+                    if let Some((py, px)) = bfs_tree.parent[to_y][to_x] {
+                        debug_assert!(!bfs_tree.g[py][px].is_empty());
                         let mut empty_child_any = false;
                         let mut child_due_min = None;
-                        for &(cy, cx) in g[py][px].iter() {
-                            debug_assert!(depth[cy][cx] > depth[py][px]);
+                        for &(cy, cx) in bfs_tree.g[py][px].iter() {
+                            debug_assert!(bfs_tree.depth[cy][cx] > bfs_tree.depth[py][px]);
                             if let Some(child_due) = filled_due[cy][cx] {
                                 debug_assert!(child_due >= s);
                                 child_due_min.chmin(child_due);
@@ -3864,18 +3874,16 @@ impl Solver {
                             let child_due_min = child_due_min.unwrap();
                             if child_due_min != s {
                                 if cfg!(debug_assertions) {
-                                    for (cy, cx) in g[py][px].iter().copied() {
-                                        debug_assert!(
-                                            !terminals[depth[cy][cx]].contains_key(&(cy, cx))
-                                        );
+                                    for (cy, cx) in bfs_tree.g[py][px].iter().copied() {
+                                        debug_assert!(!terminals[bfs_tree.depth[cy][cx]]
+                                            .contains_key(&(cy, cx)));
                                     }
-                                    if let Some((py, px)) = parent[py][px] {
-                                        debug_assert!(
-                                            !terminals[depth[py][px]].contains_key(&(py, px))
-                                        );
+                                    if let Some((py, px)) = bfs_tree.parent[py][px] {
+                                        debug_assert!(!terminals[bfs_tree.depth[py][px]]
+                                            .contains_key(&(py, px)));
                                     }
                                 }
-                                let pd = depth[py][px];
+                                let pd = bfs_tree.depth[py][px];
                                 debug_assert!(!terminals[pd].contains_key(&(py, px)));
                                 terminals[pd].insert((py, px), child_due_min);
                             }
@@ -3890,7 +3898,7 @@ impl Solver {
                             if let Some(f) = filled_due[y][x] {
                                 debug_assert!(f >= s);
                             }
-                            for (ny, nx) in g[y][x].iter().copied() {
+                            for (ny, nx) in bfs_tree.g[y][x].iter().copied() {
                                 debug_assert!(!vis[ny][nx]);
                                 vis[ny][nx] = true;
                                 que.push_back((ny, nx));
@@ -3899,16 +3907,13 @@ impl Solver {
                     }
                 }
             }
-            let mut vis = vec![vec![false; self.w]; self.h];
             self.harvest_dfs(
                 self.y0,
                 self.x0,
                 s,
-                &g,
-                &depth,
+                &bfs_tree,
                 &mut filled_due,
                 &mut terminals,
-                &mut vis,
             );
         }
         self.answer(&ans);
