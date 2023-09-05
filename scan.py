@@ -3,6 +3,7 @@ from tqdm import tqdm
 
 def main():
 	ini_cmd = "cargo build --release && cp target/release/start scan"
+	#ini_cmd = "cargo build && cp target/debug/start scan"
 	print(subprocess.getoutput(ini_cmd))
 	score_header = "Score = "
 	score_sum = 0

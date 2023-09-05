@@ -3568,23 +3568,55 @@ impl Solver {
         que.push_back((y0, x0));
         depth[y0][x0] = 0;
         let mut uf = UnionFind::new(h * w);
+        let deltas = vec![(0, 1), (0, -1), (1, 0), (-1, 0)];
+        let mut stop = vec![vec![false; w]; h];
         while let Some((y, x)) = que.pop_front() {
             let nd = depth[y][x] + 1;
             for (ny, nx) in g0[y][x].iter().copied() {
                 if depth[ny][nx].chmin(nd) {
-                    que.push_back((ny, nx));
                     g[y][x].push((ny, nx));
                     parent[ny][nx] = Some((y, x));
                     let u = y * w + x;
                     let v = ny * w + nx;
                     debug_assert!(!uf.same(u, v));
                     uf.unite(u, v);
+                    if ny != 0 && ny != h - 1 && nx != 0 && nx != w - 1 {
+                        let mut should_skip = true;
+                        let mut around_stop = 0;
+                        'around: for yin0 in (ny - 1)..=(ny + 1) {
+                            for xin0 in (nx - 1)..=(nx + 1) {
+                                if stop[yin0][xin0] {
+                                    around_stop += 1;
+                                }
+                                for (dy, dx) in deltas.iter().copied() {
+                                    if let Some(yin1) = yin0.move_delta(dy, ny - 1, ny + 1) {
+                                        if let Some(xin1) = xin0.move_delta(dx, nx - 1, nx + 1) {
+                                            if !g0[yin0][xin0].contains(&(yin1, xin1)) {
+                                                should_skip = false;
+                                                break 'around;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if should_skip && around_stop <= 0 {
+                            stop[ny][nx] = true;
+                            continue;
+                        }
+                    }
+                    que.push_back((ny, nx));
                 }
             }
         }
         debug_assert!(uf.group_num() == 1);
     }
-    fn init_terminals(&self, y: usize, x: usize, terminals: &mut [BTreeMap<(usize, usize), usize>]) {
+    fn init_terminals(
+        &self,
+        y: usize,
+        x: usize,
+        terminals: &mut [BTreeMap<(usize, usize), usize>],
+    ) {
         let mut has_child = false;
         for &(ny, nx) in self.g[y][x].iter() {
             debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
@@ -3592,7 +3624,7 @@ impl Solver {
             self.init_terminals(ny, nx, terminals);
             has_child = true;
         }
-        if !has_child { 
+        if !has_child {
             terminals[self.depth[y][x]].insert((y, x), self.t);
         }
     }
@@ -3607,7 +3639,7 @@ impl Solver {
             }
         }
         if cfg!(debug_assertions) {
-            eprintln!("{}", (1e6 as usize * score) / (self.h * self.w * self.h));
+            eprintln!("{}", (1e6 as usize * score) / (self.h * self.w * self.t));
         }
     }
     fn harvest_dfs(
@@ -3840,10 +3872,14 @@ impl Solver {
                             if child_due_min != s {
                                 if cfg!(debug_assertions) {
                                     for (cy, cx) in self.g[py][px].iter().copied() {
-                                        debug_assert!(!terminals[self.depth[cy][cx]].contains_key(&(cy, cx)));
+                                        debug_assert!(
+                                            !terminals[self.depth[cy][cx]].contains_key(&(cy, cx))
+                                        );
                                     }
                                     if let Some((py, px)) = self.parent[py][px] {
-                                        debug_assert!(!terminals[self.depth[py][px]].contains_key(&(py, px)));
+                                        debug_assert!(
+                                            !terminals[self.depth[py][px]].contains_key(&(py, px))
+                                        );
                                     }
                                 }
                                 let pd = self.depth[py][px];
@@ -3873,7 +3909,14 @@ impl Solver {
             self.show_filled_due(&filled_due);
             self.show_terminal(&terminals);
             let mut vis = vec![vec![false; self.w]; self.h];
-            self.harvest_dfs(self.y0, self.x0, s, &mut filled_due, &mut terminals, &mut vis);
+            self.harvest_dfs(
+                self.y0,
+                self.x0,
+                s,
+                &mut filled_due,
+                &mut terminals,
+                &mut vis,
+            );
             self.show_filled_due(&filled_due);
             self.show_terminal(&terminals);
         }
