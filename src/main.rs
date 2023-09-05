@@ -3421,6 +3421,110 @@ fn xor_basis(a: &[usize]) -> Vec<usize> {
     basis
 }
 
+mod low_link {
+    use std::env::args;
+
+    pub struct LowLink {
+        g: Vec<Vec<usize>>,
+    }
+    impl LowLink {
+        pub fn new(n: usize) -> Self {
+            Self { g: vec![vec![]; n] }
+        }
+        pub fn unite(&mut self, a: usize, b: usize) {
+            self.g[a].push(b);
+            self.g[b].push(a);
+        }
+        pub fn calc_articulations(&self) -> Vec<usize> {
+            let mut articulations = vec![];
+            let mut bridges = vec![];
+            self.build(&mut articulations, &mut bridges);
+            articulations
+        }
+        pub fn calc_bridges(&self) -> Vec<(usize, usize)> {
+            // still have some bugs.
+            panic!();
+            //let mut articulations = vec![];
+            //let mut bridges = vec![];
+            //self.build(&mut articulations, &mut bridges);
+            //bridges
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn dfs(
+            &self,
+            v: usize,
+            pre: usize,
+            id: &mut usize,
+            articulations: &mut Vec<usize>,
+            bridges: &mut Vec<(usize, usize)>,
+            vis: &mut [bool],
+            order: &mut [usize],
+            low: &mut [usize],
+        ) {
+            let n = self.g.len();
+            let mut is_art = false;
+            let mut child = 0;
+            for nv in self.g[v].iter().copied() {
+                if vis[nv] {
+                    if nv != pre {
+                        low[v] = std::cmp::min(low[v], order[nv]);
+                    }
+                    continue;
+                }
+                vis[nv] = true;
+                order[nv] = *id;
+                low[nv] = *id;
+                *id += 1;
+                child += 1;
+                self.dfs(nv, v, id, articulations, bridges, vis, order, low);
+                if nv != pre {
+                    low[v] = std::cmp::min(low[v], low[nv]);
+                }
+                if pre < n && order[v] <= low[nv] {
+                    is_art = true;
+                }
+                if order[v] < low[nv] {
+                    bridges.push((v, nv));
+                }
+            }
+            // root exception
+            if pre >= n && child >= 2 {
+                is_art = true;
+            }
+            if is_art {
+                articulations.push(v);
+            }
+        }
+        fn build(&self, articulations: &mut Vec<usize>, bridges: &mut Vec<(usize, usize)>) {
+            let n = self.g.len();
+            let mut vis = vec![false; n];
+            let mut order = vec![0; n];
+            let mut low = vec![0; n];
+            let mut id = 0;
+            for v in 0..n {
+                if vis[v] {
+                    continue;
+                }
+                vis[v] = true;
+                order[v] = id;
+                low[v] = id;
+                id += 1;
+                self.dfs(
+                    v,
+                    n,
+                    &mut id,
+                    articulations,
+                    bridges,
+                    &mut vis,
+                    &mut order,
+                    &mut low,
+                );
+            }
+        }
+    }
+}
+use low_link::LowLink;
+
 mod procon_reader {
     use std::fmt::Debug;
     use std::io::Read;
