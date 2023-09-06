@@ -3727,10 +3727,12 @@ impl Solver {
             let d = self.dues[*ki];
             score += d - s + 1;
         }
+        score = 1e6 as usize * score / (self.h * self.w * self.t);
         if self.scoring {
             let mut f = File::create("score.txt").unwrap();
-            let _ = write!(f, "{}", (1e6 as usize * score) / (self.h * self.w * self.t));
+            let _ = write!(f, "{}", score);
         }
+        eprintln!("{} {}ms", score, self.time0.elapsed().as_millis());
     }
     fn show_plant_cand(&self, plant_cand: &[((usize, usize), usize)]) {
         let yrate = 2;
@@ -3887,7 +3889,7 @@ impl Solver {
         now: usize,
         filled_due: &mut [Vec<Option<usize>>],
         salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
-    ) {
+    ) -> Vec<(usize, usize)> {
         let mut removed = vec![];
         for (y, filled_due) in filled_due.iter_mut().enumerate() {
             for (x, filled_due) in filled_due.iter_mut().enumerate() {
@@ -3907,7 +3909,7 @@ impl Solver {
                 }
             }
         }
-        for (ry, rx) in removed {
+        for (ry, rx) in removed.iter().copied() {
             salvages[ry][rx].clear();
             for (ny, nx) in self.g0[ry][rx].iter().copied() {
                 if filled_due[ny][nx].is_none() {
@@ -3916,62 +3918,152 @@ impl Solver {
                 salvages[ny][nx].insert((ry, rx));
             }
         }
+        removed
+    }
+    fn harvest_reverse(
+        &self,
+        removed: Vec<(usize, usize)>,
+        now: usize,
+        filled_due: &mut [Vec<Option<usize>>],
+        salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
+    ) {
+        for (ry, rx) in removed {
+            filled_due[ry][rx] = Some(now);
+            for (ny, nx) in self.g0[ry][rx].iter().copied() {
+                if filled_due[ny][nx].is_some() {
+                    salvages[ny][nx].remove(&(ry, rx));
+                } else {
+                    salvages[ry][rx].insert((ny, nx));
+                }
+            }
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn plant(
+        &self,
+        now: usize,
+        bfs_tree: &BfsTree,
+        salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
+        filled_due: &mut [Vec<Option<usize>>],
+        crops: &[(usize, usize)],
+        greedy: bool,
+        rand: &mut XorShift64,
+    ) -> (usize, Vec<(usize, usize, usize, usize)>) {
+        let mut remain_crops = crops
+            .iter()
+            .filter(|_| greedy || rand.next_usize() % 10 != 0)
+            .map(|&(ki, _due)| ki)
+            .collect::<BTreeSet<usize>>();
+        let mut score = 0;
+        let mut ans = vec![];
+        let rem = 20.0; //(self.t - s) as f64;
+        while !remain_crops.is_empty() {
+            let plant_cands = self.calc_plant_cands(salvages, filled_due);
+            let mut delta_min = None;
+            let mut plant = None;
+            for &ki in remain_crops.iter() {
+                let due = self.dues[ki];
+                debug_assert!(now < due);
+                let drate = (due - now + 1) as f64 / rem;
+                let dc = min(
+                    (bfs_tree.depth_max as f64 * drate) as usize,
+                    bfs_tree.depth_max,
+                );
+                for &((ty, tx), due_min) in plant_cands.iter() {
+                    debug_assert!(filled_due[ty][tx].is_none());
+                    if due_min < due {
+                        continue;
+                    }
+                    let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
+                    let eval = (due_min - due, delta);
+                    if delta_min.chmin(eval) {
+                        plant = Some((ty, tx, ki));
+                    }
+                }
+            }
+            if let Some((to_y, to_x, ki)) = plant {
+                let due = self.dues[ki];
+                ans.push((ki, to_y, to_x, now));
+                score += due + 1 - now;
+                remain_crops.remove(&ki);
+                filled_due[to_y][to_x] = Some(due);
+                for (ny, nx) in self.g0[to_y][to_x].iter().copied() {
+                    if filled_due[ny][nx].is_none() {
+                        salvages[to_y][to_x].insert((ny, nx));
+                    } else {
+                        salvages[ny][nx].remove(&(to_y, to_x));
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        (score, ans)
+    }
+    fn plant_reverse(
+        &self,
+        delta_ans: &[(usize, usize, usize, usize)],
+        salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
+        filled_due: &mut [Vec<Option<usize>>],
+    ) {
+        for (_ki, y, x, _s) in delta_ans.iter().copied() {
+            filled_due[y][x] = None;
+            salvages[y][x].clear();
+            for (ny, nx) in self.g0[y][x].iter().copied() {
+                if filled_due[ny][nx].is_some() {
+                    salvages[ny][nx].insert((y, x));
+                }
+            }
+        }
+    }
+    fn grow(
+        &self,
+        now: usize,
+        bfs_tree: &BfsTree,
+        salvages: &mut Vec<Vec<BTreeSet<(usize, usize)>>>,
+        filled_due: &mut Vec<Vec<Option<usize>>>,
+        greedy: bool,
+    ) -> (usize, Vec<(usize, usize, usize, usize)>) {
+        let f0 = filled_due.clone();
+        let s0 = salvages.clone();
+        let mut rng = ChaChaRng::from_seed([0; 32]);
+        if now == self.t {
+            return (0, vec![]);
+        }
+        let mut crops = self.crops[now].clone();
+        let mut best_score = 0;
+        let mut best_ans = vec![];
+        let mut rand = XorShift64::new();
+        for _lc in 0..1000 {
+            // trial
+            let (score0, ans0) = self.plant(
+                now, bfs_tree, salvages, filled_due, &crops, greedy, &mut rand,
+            );
+            let removed = self.harvest(now, filled_due, salvages);
+            let (score1, ans1) = self.grow(now + 1, bfs_tree, salvages, filled_due, true);
+            self.harvest_reverse(removed, now, filled_due, salvages);
+            self.plant_reverse(&ans0, salvages, filled_due);
+            if best_score.chmax(score0 + score1) {
+                best_ans = ans0.into_iter().chain(ans1.into_iter()).collect::<Vec<_>>();
+            }
+            if greedy || now == 0 {
+                break;
+            } else {
+                crops.shuffle(&mut rng);
+            }
+        }
+
+        let f1 = filled_due.clone();
+        let s1 = salvages.clone();
+        assert!(f0 == f1);
+        assert!(s0 == s1);
+        (best_score, best_ans)
     }
     fn solve(&self) {
-        let mut ans = vec![];
         let bfs_tree = BfsTree::new(self.h, self.w, self.y0, self.x0, &self.g0);
         let mut salvages = vec![vec![BTreeSet::new(); self.w]; self.h];
         let mut filled_due = vec![vec![None; self.w]; self.h];
-        let rem = 20.0; //(self.t - s) as f64;
-        for s in 0..self.t {
-            let mut crops = self.crops[s]
-                .iter()
-                .copied()
-                .collect::<BTreeMap<usize, usize>>();
-            while !crops.is_empty() {
-                let plant_cands = self.calc_plant_cands(&salvages, &filled_due);
-                let mut delta_min = None;
-                let mut plant = None;
-                for (&ki, &due) in crops.iter() {
-                    debug_assert!(s < due);
-                    let drate = (due - s + 1) as f64 / rem;
-                    let dc = min(
-                        (bfs_tree.depth_max as f64 * drate) as usize,
-                        bfs_tree.depth_max,
-                    );
-                    for &((ty, tx), due_min) in plant_cands.iter() {
-                        debug_assert!(filled_due[ty][tx].is_none());
-                        if due_min < due {
-                            continue;
-                        }
-                        let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
-                        let eval = (due_min - due, delta);
-                        if delta_min.chmin(eval) {
-                            plant = Some((ty, tx, ki));
-                        }
-                    }
-                }
-                if let Some((to_y, to_x, ki)) = plant {
-                    let due = self.dues[ki];
-                    ans.push((ki, to_y, to_x, s));
-                    crops.remove(&ki);
-                    if cfg!(debug_assertions) {
-                        //self.answer(&ans);
-                    }
-                    filled_due[to_y][to_x] = Some(due);
-                    for (ny, nx) in self.g0[to_y][to_x].iter().copied() {
-                        if filled_due[ny][nx].is_none() {
-                            salvages[to_y][to_x].insert((ny, nx));
-                        } else {
-                            salvages[ny][nx].remove(&(to_y, to_x));
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-            self.harvest(s, &mut filled_due, &mut salvages);
-        }
+        let (_, ans) = self.grow(0, &bfs_tree, &mut salvages, &mut filled_due, true);
         self.answer(&ans);
     }
 }
