@@ -3825,15 +3825,10 @@ impl Solver {
     }
     fn calc_plant_cands(
         &self,
-        y: usize,
-        x: usize,
         salvages: &[Vec<BTreeSet<(usize, usize)>>],
         filled_due: &[Vec<Option<usize>>],
-        plant_cands: &mut Vec<((usize, usize), usize)>,
-    ) {
-        if y == self.y0 && x == self.x0 {
-            plant_cands.clear();
-        }
+    ) -> Vec<((usize, usize), usize)> {
+        let mut plant_cands = vec![];
         let mut low_link = LowLink::new(self.h * self.w + 1);
         low_link.unite(self.y0 * self.w + self.x0, self.h * self.w);
         for (y, row) in self.g0.iter().enumerate() {
@@ -3885,6 +3880,7 @@ impl Solver {
                 }
             }
         }
+        plant_cands
     }
     fn harvest(
         &self,
@@ -3896,7 +3892,7 @@ impl Solver {
         for (y, filled_due) in filled_due.iter_mut().enumerate() {
             for (x, filled_due) in filled_due.iter_mut().enumerate() {
                 if let Some(al_due) = filled_due {
-                    match now.cmp(&al_due) {
+                    match now.cmp(al_due) {
                         Ordering::Less => {
                             // nop
                         }
@@ -3926,33 +3922,39 @@ impl Solver {
         let bfs_tree = BfsTree::new(self.h, self.w, self.y0, self.x0, &self.g0);
         let mut salvages = vec![vec![BTreeSet::new(); self.w]; self.h];
         let mut filled_due = vec![vec![None; self.w]; self.h];
-        let mut plant_cands = vec![];
-        self.calc_plant_cands(self.y0, self.x0, &salvages, &filled_due, &mut plant_cands);
+        let rem = 20.0; //(self.t - s) as f64;
         for s in 0..self.t {
-            let rem = 20.0; //(self.t - s) as f64;
-            // plant
-            for &(ki, due) in self.crops[s].iter() {
-                debug_assert!(s < due);
-                let drate = (due - s + 1) as f64 / rem;
-                let dc = min(
-                    (bfs_tree.depth_max as f64 * drate) as usize,
-                    bfs_tree.depth_max,
-                );
+            let mut crops = self.crops[s]
+                .iter()
+                .copied()
+                .collect::<BTreeMap<usize, usize>>();
+            while !crops.is_empty() {
+                let plant_cands = self.calc_plant_cands(&salvages, &filled_due);
                 let mut delta_min = None;
                 let mut plant = None;
-                for &((ty, tx), due_min) in plant_cands.iter() {
-                    debug_assert!(filled_due[ty][tx].is_none());
-                    if due_min < due {
-                        continue;
-                    }
-                    let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
-                    let eval = (due_min - due, delta);
-                    if delta_min.chmin(eval) {
-                        plant = Some((ty, tx));
+                for (&ki, &due) in crops.iter() {
+                    debug_assert!(s < due);
+                    let drate = (due - s + 1) as f64 / rem;
+                    let dc = min(
+                        (bfs_tree.depth_max as f64 * drate) as usize,
+                        bfs_tree.depth_max,
+                    );
+                    for &((ty, tx), due_min) in plant_cands.iter() {
+                        debug_assert!(filled_due[ty][tx].is_none());
+                        if due_min < due {
+                            continue;
+                        }
+                        let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
+                        let eval = (due_min - due, delta);
+                        if delta_min.chmin(eval) {
+                            plant = Some((ty, tx, ki));
+                        }
                     }
                 }
-                if let Some((to_y, to_x)) = plant {
+                if let Some((to_y, to_x, ki)) = plant {
+                    let due = self.dues[ki];
                     ans.push((ki, to_y, to_x, s));
+                    crops.remove(&ki);
                     if cfg!(debug_assertions) {
                         //self.answer(&ans);
                     }
@@ -3964,17 +3966,11 @@ impl Solver {
                             salvages[ny][nx].remove(&(to_y, to_x));
                         }
                     }
-                    self.calc_plant_cands(
-                        self.y0,
-                        self.x0,
-                        &salvages,
-                        &filled_due,
-                        &mut plant_cands,
-                    );
+                } else {
+                    break;
                 }
             }
             self.harvest(s, &mut filled_due, &mut salvages);
-            self.calc_plant_cands(self.y0, self.x0, &salvages, &filled_due, &mut plant_cands);
         }
         self.answer(&ans);
     }
