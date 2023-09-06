@@ -12,11 +12,10 @@ def main():
 	score_min_idx = 0
 	seed_num = 2000
 	for i in tqdm(range(seed_num)):
-		cmd = "./scan < tools/in/{0:04d}.txt > tools/out/{0:04d}.txt".format(i, i)
-		ret = subprocess.getoutput(cmd)
-		cmd = "./vis tools/in/{0:04d}.txt tools/out/{0:04d}.txt".format(i, i)
-		ret = subprocess.getoutput(cmd)
-		score = int(ret[len(score_header):])
+		cmd = "./scan scoring < tools/in/{0:04d}.txt > tools/out/{0:04d}.txt".format(i, i)
+		_ = subprocess.getoutput(cmd)
+		for line in	open("score.txt"):
+			score = int(line)
 		score_sum += score
 		score_norm += 1
 		if score_min < 0:

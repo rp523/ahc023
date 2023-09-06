@@ -3571,6 +3571,9 @@ mod procon_reader {
 use procon_reader::*;
 //////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
+use std::env;
+use std::fs::File;
+use std::io::Write;
 
 struct BfsTree {
     g: Vec<Vec<Vec<(usize, usize)>>>,
@@ -3659,10 +3662,10 @@ struct Solver {
     g0: Vec<Vec<Vec<(usize, usize)>>>,
     crops: Vec<Vec<(usize, usize)>>,
     dues: Vec<usize>,
+    scoring: bool,
 }
 impl Solver {
-    fn new() -> Self {
-        let time0 = Instant::now();
+    fn new(time0: Instant, scoring: bool) -> Self {
         let t = read::<usize>();
         let h = read::<usize>();
         let w = read::<usize>();
@@ -3713,6 +3716,7 @@ impl Solver {
             g0,
             crops,
             dues,
+            scoring,
         }
     }
     fn answer(&self, ans: &[(usize, usize, usize, usize)]) {
@@ -3720,13 +3724,12 @@ impl Solver {
         println!("{}", ans.len());
         for (ki, y, x, s) in ans {
             println!("{} {} {} {}", ki + 1, y, x, s + 1);
-            if cfg!(debug_assertions) {
-                let d = self.dues[*ki];
-                score += d - s + 1;
-            }
+            let d = self.dues[*ki];
+            score += d - s + 1;
         }
-        if cfg!(debug_assertions) {
-            eprintln!("{}", (1e6 as usize * score) / (self.h * self.w * self.t));
+        if self.scoring {
+            let mut f = File::create("score.txt").unwrap();
+            let _ = write!(f, "{}", (1e6 as usize * score) / (self.h * self.w * self.t));
         }
     }
     fn calc_plant_cands(
@@ -3986,5 +3989,12 @@ impl Solver {
     }
 }
 fn main() {
-    Solver::new().solve();
+    let time0 = Instant::now();
+    let mut scoring = false;
+    for (i, arg) in env::args().enumerate() {
+        if i != 0 && arg == "scoring" {
+            scoring = true;
+        }
+    }
+    Solver::new(time0, scoring).solve();
 }
