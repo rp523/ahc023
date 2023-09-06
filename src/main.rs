@@ -3732,87 +3732,7 @@ impl Solver {
             let _ = write!(f, "{}", (1e6 as usize * score) / (self.h * self.w * self.t));
         }
     }
-    fn calc_plant_cands(
-        &self,
-        y: usize,
-        x: usize,
-        bfs_tree: &BfsTree,
-        filled_due: &[Vec<Option<usize>>],
-        plant_cands: &mut Vec<((usize, usize), usize)>,
-    ) {
-        if y == self.y0 && x == self.x0 {
-            plant_cands.clear();
-        }
-        if filled_due[y][x].is_some() {
-            return;
-        }
-        let mut empty_child_any = false;
-        let mut child_due_min = None;
-        for &(ny, nx) in bfs_tree.g[y][x].iter() {
-            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
-            self.calc_plant_cands(ny, nx, bfs_tree, filled_due, plant_cands);
-            if let Some(child_due) = filled_due[ny][nx] {
-                child_due_min.chmin(child_due);
-            } else {
-                empty_child_any = true;
-                // breaking is prohibied.
-            }
-        }
-        if !empty_child_any {
-            // should be plant_cand
-            if cfg!(debug_assertions) {
-                for &((ay, ax), _) in plant_cands.iter() {
-                    debug_assert!((ay, ax) != (y, x));
-                }
-            }
-            if let Some(child_due_min) = child_due_min {
-                plant_cands.push(((y, x), child_due_min));
-            } else {
-                plant_cands.push(((y, x), self.t));
-            }
-        }
-    }
-    fn harvest_dfs(
-        &self,
-        y: usize,
-        x: usize,
-        now: usize,
-        bfs_tree: &BfsTree,
-        filled_due: &mut [Vec<Option<usize>>],
-    ) {
-        if let Some(al_due) = filled_due[y][x] {
-            match now.cmp(&al_due) {
-                Ordering::Less => {
-                    return;
-                }
-                Ordering::Equal => {
-                    filled_due[y][x] = None;
-                }
-                Ordering::Greater => {
-                    unreachable!();
-                }
-            }
-        }
-        debug_assert!(filled_due[y][x].is_none());
-        for &(ny, nx) in bfs_tree.g[y][x].iter() {
-            debug_assert!((ny as i64 - y as i64).abs() + (nx as i64 - x as i64).abs() == 1);
-            debug_assert!(bfs_tree.depth[ny][nx] > bfs_tree.depth[y][x]);
-            self.harvest_dfs(ny, nx, now, bfs_tree, filled_due);
-        }
-        if cfg!(debug_assertions) && (y == self.y0) && (x == self.x0) {
-            for filled_due in filled_due.iter() {
-                for &f in filled_due.iter().flatten() {
-                    debug_assert!(f > now);
-                }
-            }
-        }
-    }
-    fn show_plant_cand(
-        &self,
-        depth: &[Vec<usize>],
-        plant_cand: &[BTreeMap<(usize, usize), usize>],
-    ) {
+    fn show_plant_cand(&self, plant_cand: &[((usize, usize), usize)]) {
         let yrate = 2;
         let xrate = 3;
         let text_h = self.h * yrate + 1;
@@ -3844,7 +3764,10 @@ impl Solver {
             for x in 0..self.w {
                 for ry in 1..yrate {
                     for rx in 1..xrate {
-                        if let Some(&plant_cand) = plant_cand[depth[y][x]].get(&(y, x)) {
+                        for ((py, px), plant_cand) in plant_cand.iter().copied() {
+                            if (y, x) != (py, px) {
+                                continue;
+                            }
                             let val = (plant_cand / 10usize.pow((xrate - 1 - rx) as u32)) % 10;
                             text[yrate * y + ry][xrate * x + rx] = (b'0' + val as u8) as char;
                         }
@@ -3900,19 +3823,117 @@ impl Solver {
             eprintln!("{}", line.into_iter().collect::<String>());
         }
     }
+    fn calc_plant_cands(
+        &self,
+        y: usize,
+        x: usize,
+        salvages: &[Vec<BTreeSet<(usize, usize)>>],
+        filled_due: &[Vec<Option<usize>>],
+        plant_cands: &mut Vec<((usize, usize), usize)>,
+    ) {
+        if y == self.y0 && x == self.x0 {
+            plant_cands.clear();
+        }
+        let mut low_link = LowLink::new(self.h * self.w + 1);
+        low_link.unite(self.y0 * self.w + self.x0, self.h * self.w);
+        for (y, row) in self.g0.iter().enumerate() {
+            for (x, pt) in row.iter().enumerate() {
+                if filled_due[y][x].is_some() {
+                    continue;
+                }
+                for (ny, nx) in pt.iter().copied() {
+                    if filled_due[ny][nx].is_some() {
+                        continue;
+                    }
+                    low_link.unite(y * self.w + x, ny * self.w + nx);
+                }
+            }
+        }
+        let mut fragile = vec![vec![false; self.w]; self.h];
+        for (ay, ax) in low_link
+            .calc_articulations()
+            .into_iter()
+            .filter(|&yx| yx != self.h * self.w)
+            .map(|yx| (yx / self.w, yx % self.w))
+        {
+            fragile[ay][ax] = true;
+        }
+        for (y, row) in filled_due.iter().enumerate() {
+            for (x, pt) in row.iter().enumerate() {
+                if pt.is_some() {
+                    continue;
+                }
+                if fragile[y][x] {
+                    continue;
+                }
+                // must be canditate
+                let mut cand_lim = None;
+                for (ny, nx) in self.g0[y][x].iter().copied() {
+                    if let Some(filled_due) = filled_due[ny][nx] {
+                        if salvages[ny][nx].len() == 1 {
+                            let &(ay, ax) = salvages[ny][nx].iter().next().unwrap();
+                            if (ay, ax) == (y, x) {
+                                cand_lim.chmin(filled_due);
+                            }
+                        }
+                    }
+                }
+                if let Some(cand_lim) = cand_lim {
+                    plant_cands.push(((y, x), cand_lim));
+                } else {
+                    plant_cands.push(((y, x), self.t));
+                }
+            }
+        }
+    }
+    fn harvest(
+        &self,
+        now: usize,
+        filled_due: &mut [Vec<Option<usize>>],
+        salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
+    ) {
+        let mut removed = vec![];
+        for (y, filled_due) in filled_due.iter_mut().enumerate() {
+            for (x, filled_due) in filled_due.iter_mut().enumerate() {
+                if let Some(al_due) = filled_due {
+                    match now.cmp(&al_due) {
+                        Ordering::Less => {
+                            // nop
+                        }
+                        Ordering::Equal => {
+                            *filled_due = None;
+                            removed.push((y, x));
+                        }
+                        Ordering::Greater => {
+                            unreachable!();
+                        }
+                    }
+                }
+            }
+        }
+        for (ry, rx) in removed {
+            salvages[ry][rx].clear();
+            for (ny, nx) in self.g0[ry][rx].iter().copied() {
+                if filled_due[ny][nx].is_none() {
+                    continue;
+                }
+                salvages[ny][nx].insert((ry, rx));
+            }
+        }
+    }
     fn solve(&self) {
         let mut ans = vec![];
         let bfs_tree = BfsTree::new(self.h, self.w, self.y0, self.x0, &self.g0);
+        let mut salvages = vec![vec![BTreeSet::new(); self.w]; self.h];
         let mut filled_due = vec![vec![None; self.w]; self.h];
         let mut plant_cands = vec![];
-        self.calc_plant_cands(self.y0, self.x0, &bfs_tree, &filled_due, &mut plant_cands);
+        self.calc_plant_cands(self.y0, self.x0, &salvages, &filled_due, &mut plant_cands);
         for s in 0..self.t {
-            let rem = (self.t - s) as f64;
+            let rem = 20.0; //(self.t - s) as f64;
             // plant
             for &(ki, due) in self.crops[s].iter() {
                 debug_assert!(s < due);
                 let drate = (due - s + 1) as f64 / rem;
-                debug_assert!((0.0..=1.0).contains(&drate));
                 let dc = min(
                     (bfs_tree.depth_max as f64 * drate) as usize,
                     bfs_tree.depth_max,
@@ -3921,11 +3942,12 @@ impl Solver {
                 let mut plant = None;
                 for &((ty, tx), due_min) in plant_cands.iter() {
                     debug_assert!(filled_due[ty][tx].is_none());
-                    if due_min <= due {
+                    if due_min < due {
                         continue;
                     }
                     let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
-                    if delta_min.chmin(delta) {
+                    let eval = (due_min - due, delta);
+                    if delta_min.chmin(eval) {
                         plant = Some((ty, tx));
                     }
                 }
@@ -3934,56 +3956,25 @@ impl Solver {
                     if cfg!(debug_assertions) {
                         //self.answer(&ans);
                     }
-                    if cfg!(debug_assertions) {
-                        let mut que = VecDeque::new();
-                        que.push_back((to_y, to_x));
-                        let mut vis = vec![vec![false; self.w]; self.h];
-                        vis[to_y][to_x] = true;
-                        while let Some((y, x)) = que.pop_front() {
-                            if let Some(f) = filled_due[y][x] {
-                                debug_assert!(f >= s);
-                                debug_assert!(f >= due);
-                            }
-                            for (ny, nx) in bfs_tree.g[y][x].iter().copied() {
-                                debug_assert!(!vis[ny][nx]);
-                                vis[ny][nx] = true;
-                                que.push_back((ny, nx));
-                            }
-                        }
-                        for (cy, cx) in bfs_tree.g[to_y][to_x].iter().copied() {
-                            for &((y, x), _) in plant_cands.iter() {
-                                debug_assert!((cy, cx) != (y, x));
-                            }
+                    filled_due[to_y][to_x] = Some(due);
+                    for (ny, nx) in self.g0[to_y][to_x].iter().copied() {
+                        if filled_due[ny][nx].is_none() {
+                            salvages[to_y][to_x].insert((ny, nx));
+                        } else {
+                            salvages[ny][nx].remove(&(to_y, to_x));
                         }
                     }
-                    filled_due[to_y][to_x] = Some(due);
                     self.calc_plant_cands(
                         self.y0,
                         self.x0,
-                        &bfs_tree,
+                        &salvages,
                         &filled_due,
                         &mut plant_cands,
                     );
-                    if cfg!(debug_assertions) {
-                        let mut que = VecDeque::new();
-                        que.push_back((self.y0, self.x0));
-                        let mut vis = vec![vec![false; self.w]; self.h];
-                        vis[self.y0][self.x0] = true;
-                        while let Some((y, x)) = que.pop_front() {
-                            if let Some(f) = filled_due[y][x] {
-                                debug_assert!(f >= s);
-                            }
-                            for (ny, nx) in bfs_tree.g[y][x].iter().copied() {
-                                debug_assert!(!vis[ny][nx]);
-                                vis[ny][nx] = true;
-                                que.push_back((ny, nx));
-                            }
-                        }
-                    }
                 }
             }
-            self.harvest_dfs(self.y0, self.x0, s, &bfs_tree, &mut filled_due);
-            self.calc_plant_cands(self.y0, self.x0, &bfs_tree, &filled_due, &mut plant_cands);
+            self.harvest(s, &mut filled_due, &mut salvages);
+            self.calc_plant_cands(self.y0, self.x0, &salvages, &filled_due, &mut plant_cands);
         }
         self.answer(&ans);
     }
