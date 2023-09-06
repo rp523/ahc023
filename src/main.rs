@@ -3763,7 +3763,7 @@ impl Solver {
             // should be plant_cand
             if cfg!(debug_assertions) {
                 for &((ay, ax), _) in plant_cands.iter() {
-                    debug_assert!(ay != y && ax != x);
+                    debug_assert!((ay, ax) != (y, x));
                 }
             }
             if let Some(child_due_min) = child_due_min {
