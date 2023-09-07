@@ -3945,24 +3945,18 @@ impl Solver {
         bfs_tree: &BfsTree,
         salvages: &mut [Vec<BTreeSet<(usize, usize)>>],
         filled_due: &mut [Vec<Option<usize>>],
-        crops: &[(usize, usize)],
-        greedy: bool,
-        rand: &mut XorShift64,
+        planned_crops: &[(usize, usize)],
     ) -> (usize, Vec<(usize, usize, usize, usize)>) {
-        let mut remain_crops = crops
-            .iter()
-            .filter(|_| greedy || rand.next_usize() % 10 != 0)
-            .map(|&(ki, _due)| ki)
-            .collect::<BTreeSet<usize>>();
         let mut score = 0;
         let mut ans = vec![];
         let rem = 20.0; //(self.t - s) as f64;
-        while !remain_crops.is_empty() {
+        let mut remains = vec![true; planned_crops.len()];
+        let mut remain_num = planned_crops.len();
+        while remain_num > 0 {
             let plant_cands = self.calc_plant_cands(salvages, filled_due);
             let mut delta_min = None;
             let mut plant = None;
-            for &ki in remain_crops.iter() {
-                let due = self.dues[ki];
+            for (ri, &(_ki, due)) in planned_crops.iter().enumerate().filter(|(ri, _)| remains[*ri]) {
                 debug_assert!(now < due);
                 let drate = (due - now + 1) as f64 / rem;
                 let dc = min(
@@ -3975,17 +3969,19 @@ impl Solver {
                         continue;
                     }
                     let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
-                    let eval = (due_min - due, delta);
+                    let eval = (if due == self.t - 1 { 0 } else { 1 }, due_min - due, delta);
                     if delta_min.chmin(eval) {
-                        plant = Some((ty, tx, ki));
+                        plant = Some((ty, tx, ri));
                     }
                 }
             }
-            if let Some((to_y, to_x, ki)) = plant {
-                let due = self.dues[ki];
+            if let Some((to_y, to_x, ri)) = plant {
+                debug_assert!(remains[ri]);
+                let (ki, due) = planned_crops[ri];
                 ans.push((ki, to_y, to_x, now));
                 score += due + 1 - now;
-                remain_crops.remove(&ki);
+                remains[ri] = false;
+                remain_num -= 1;
                 filled_due[to_y][to_x] = Some(due);
                 for (ny, nx) in self.g0[to_y][to_x].iter().copied() {
                     if filled_due[ny][nx].is_none() {
@@ -4024,39 +4020,66 @@ impl Solver {
         filled_due: &mut Vec<Vec<Option<usize>>>,
         greedy: bool,
     ) -> (usize, Vec<(usize, usize, usize, usize)>) {
-        let f0 = filled_due.clone();
-        let s0 = salvages.clone();
-        let mut rng = ChaChaRng::from_seed([0; 32]);
         if now == self.t {
             return (0, vec![]);
         }
-        let mut crops = self.crops[now].clone();
         let mut best_score = 0;
-        let mut best_ans = vec![];
+        let mut crops = self.crops[now]
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut crop_len = crops.len();
+        let (mut best_crops, mut best_crop_len) = (crops.clone(), crop_len);
         let mut rand = XorShift64::new();
-        for _lc in 0..1000 {
+        let mut rng = ChaChaRng::from_seed([0; 32]);
+        let mut lc = 0;
+        while lc < 4 {//(self.time0.elapsed().as_millis() as usize) < 1800 * (now + 1) / self.t {
+            lc += 1;
             // trial
-            let (score0, ans0) = self.plant(
-                now, bfs_tree, salvages, filled_due, &crops, greedy, &mut rand,
-            );
-            let removed = self.harvest(now, filled_due, salvages);
-            let (score1, ans1) = self.grow(now + 1, bfs_tree, salvages, filled_due, true);
-            self.harvest_reverse(removed, now, filled_due, salvages);
-            self.plant_reverse(&ans0, salvages, filled_due);
-            if best_score.chmax(score0 + score1) {
-                best_ans = ans0.into_iter().chain(ans1.into_iter()).collect::<Vec<_>>();
-            }
-            if greedy || now == 0 {
+            let (score0, ans0) = self.plant(now, bfs_tree, salvages, filled_due, &crops[0..crop_len]);
+            if crop_len == crops.len() && ans0.is_empty() {
+                self.plant_reverse(&ans0, salvages, filled_due);
                 break;
-            } else {
-                crops.shuffle(&mut rng);
             }
-        }
 
-        let f1 = filled_due.clone();
-        let s1 = salvages.clone();
-        assert!(f0 == f1);
-        assert!(s0 == s1);
+            if !ans0.is_empty() {
+                let removed = self.harvest(now, filled_due, salvages);
+                let (score1, ans1) = self.grow(now + 1, bfs_tree, salvages, filled_due, true);
+                self.harvest_reverse(removed, now, filled_due, salvages);
+                self.plant_reverse(&ans0, salvages, filled_due);
+                if best_score.chmax(score0 + score1) {
+                    best_crops = crops.clone();
+                    best_crop_len = crop_len;
+                }
+                if greedy {
+                    let best_ans = ans0
+                        .iter()
+                        .copied()
+                        .chain(ans1.into_iter())
+                        .collect::<Vec<_>>();
+                    let best_score = score0 + score1;
+                    return (best_score, best_ans);
+                }
+            }
+            // not greedy
+            crops.shuffle(&mut rng);
+            crop_len = rand.next_usize() % crops.len();
+        }
+        let (score0, ans0) = self.plant(now, bfs_tree, salvages, filled_due, &best_crops[0..best_crop_len]);
+        let removed = self.harvest(now, filled_due, salvages);
+        if !greedy {
+            eprintln!("{} {} {} {}", now, crops.len(), lc, self.time0.elapsed().as_millis());
+        }
+        let (score1, ans1) = self.grow(now + 1, bfs_tree, salvages, filled_due, greedy);
+        self.harvest_reverse(removed, now, filled_due, salvages);
+        self.plant_reverse(&ans0, salvages, filled_due);
+        let best_ans = ans0
+            .iter()
+            .copied()
+            .chain(ans1.into_iter())
+            .collect::<Vec<_>>();
+        let best_score = score0 + score1;
+
         (best_score, best_ans)
     }
     fn solve(&self) {
