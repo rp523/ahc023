@@ -11,7 +11,7 @@ def main():
 	score_min_idx = 0
 	score_max = -1
 	score_max_idx = 0
-	seed_num = 50
+	seed_num = 2000
 	for i in tqdm(range(seed_num)):
 		cmd = "./scan scoring < tools/in/{0:04d}.txt > tools/out/{0:04d}.txt".format(i, i)
 		_ = subprocess.getoutput(cmd)

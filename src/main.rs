@@ -3662,6 +3662,7 @@ struct Solver {
     g0: Vec<Vec<Vec<(usize, usize)>>>,
     crops: Vec<Vec<(usize, usize)>>,
     dues: Vec<usize>,
+    wall: Vec<Vec<usize>>,
     scoring: bool,
 }
 impl Solver {
@@ -3706,6 +3707,28 @@ impl Solver {
             crops[s].push((ki, d));
             dues.push(d);
         }
+        let inf = h * w;
+        let mut wall = vec![vec![inf; w]; h];
+        for ty in 0..h {
+            for tx in 0..w {
+                let mut que = VecDeque::new();
+                que.push_back((ty, tx));
+                let mut dist = vec![vec![inf; w]; h];
+                dist[ty][tx] = 0;
+                'bfs: while let Some((y, x)) = que.pop_front() {
+                    if g0[y][x].len() < 4 {
+                        wall[ty][tx] = dist[y][x];
+                        break 'bfs;
+                    }
+                    let nd = dist[y][x] + 1;
+                    for (ny, nx) in g0[y][x].iter().copied() {
+                        if dist[ny][nx].chmin(nd) {
+                            que.push_back((ny, nx));
+                        }
+                    }
+                }
+            }
+        }
         Self {
             time0,
             t,
@@ -3716,6 +3739,7 @@ impl Solver {
             g0,
             crops,
             dues,
+            wall,
             scoring,
         }
     }
@@ -3956,7 +3980,11 @@ impl Solver {
             let plant_cands = self.calc_plant_cands(salvages, filled_due);
             let mut delta_min = None;
             let mut plant = None;
-            for (ri, &(_ki, due)) in planned_crops.iter().enumerate().filter(|(ri, _)| remains[*ri]) {
+            for (ri, &(_ki, due)) in planned_crops
+                .iter()
+                .enumerate()
+                .filter(|(ri, _)| remains[*ri])
+            {
                 debug_assert!(now < due);
                 let drate = (due - now + 1) as f64 / rem;
                 let dc = min(
@@ -3969,7 +3997,12 @@ impl Solver {
                         continue;
                     }
                     let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
-                    let eval = (if due == self.t - 1 { 0 } else { 1 }, due_min - due, delta);
+                    let eval = (
+                        if due == self.t - 1 { 0 } else { 1 },
+                        due_min - due,
+                        self.wall[ty][tx],
+                        delta,
+                    );
                     if delta_min.chmin(eval) {
                         plant = Some((ty, tx, ri));
                     }
@@ -4024,19 +4057,17 @@ impl Solver {
             return (0, vec![]);
         }
         let mut best_score = 0;
-        let mut crops = self.crops[now]
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let mut crops = self.crops[now].iter().copied().collect::<Vec<_>>();
         let mut crop_len = crops.len();
         let (mut best_crops, mut best_crop_len) = (crops.clone(), crop_len);
         let mut rand = XorShift64::new();
         let mut rng = ChaChaRng::from_seed([0; 32]);
         let mut lc = 0;
-        while lc < 4 {//(self.time0.elapsed().as_millis() as usize) < 1800 * (now + 1) / self.t {
+        while (self.time0.elapsed().as_millis() as usize) < 1800 * (now + 1) / self.t {
             lc += 1;
             // trial
-            let (score0, ans0) = self.plant(now, bfs_tree, salvages, filled_due, &crops[0..crop_len]);
+            let (score0, ans0) =
+                self.plant(now, bfs_tree, salvages, filled_due, &crops[0..crop_len]);
             if crop_len == crops.len() && ans0.is_empty() {
                 self.plant_reverse(&ans0, salvages, filled_due);
                 break;
@@ -4065,10 +4096,22 @@ impl Solver {
             crops.shuffle(&mut rng);
             crop_len = rand.next_usize() % crops.len();
         }
-        let (score0, ans0) = self.plant(now, bfs_tree, salvages, filled_due, &best_crops[0..best_crop_len]);
+        let (score0, ans0) = self.plant(
+            now,
+            bfs_tree,
+            salvages,
+            filled_due,
+            &best_crops[0..best_crop_len],
+        );
         let removed = self.harvest(now, filled_due, salvages);
         if !greedy {
-            eprintln!("{} {} {} {}", now, crops.len(), lc, self.time0.elapsed().as_millis());
+            eprintln!(
+                "{} {} {} {}",
+                now,
+                crops.len(),
+                lc,
+                self.time0.elapsed().as_millis()
+            );
         }
         let (score1, ans1) = self.grow(now + 1, bfs_tree, salvages, filled_due, greedy);
         self.harvest_reverse(removed, now, filled_due, salvages);
