@@ -4198,32 +4198,41 @@ impl Solver {
                 vals[ti][y][x] = false;
             }
         }
-        let mut rand = XorShift64::new();
         let mut lc = 0;
         while self.time0.elapsed().as_millis() < 1800 {
             lc += 1;
             debug!(lc);
-            let del_i = rand.next_usize() % kis1.len();
-            let &(dki, ds, dd, dy, dx) = kis1
-                .iter()
-                .enumerate()
-                .filter_map(|x| if x.0 == del_i { Some(x.1) } else { None })
-                .collect::<Vec<_>>()[0];
-            let dscore = dd - ds + 1;
+            let delyx = lc % (self.h * self.w);
+            let dely = delyx % self.h;
+            let delx = delyx % self.w;
+            let dscore = (0..self.t).filter_map(|ti| state[ti][dely][delx]).count();
+            if dscore == 0 {
+                continue;
+            }
 
             let state0 = state.clone();
             let sals0 = sals.clone();
             let vals0 = vals.clone();
-            for ti in ds..=dd {
+            let mut dels = vec![];
+            let mut pre = None;
+            for ti in 0..self.t {
+                if let Some(dki) = state[ti][dely][delx] {
+                    if pre != Some(dki) {
+                        dels.push((dki, ti));
+                    }
+                }
+                pre = state[ti][dely][delx];
+            }
+            for ti in 0..self.t {
                 vals[ti] = vec![vec![true; self.w]; self.h];
                 links[ti] = LowLink::new(self.h * self.w + 1);
                 links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
 
-                state[ti][dy][dx] = None;
-                sals[ti][dy][dx].clear();
-                for (ny, nx) in self.g0[dy][dx].iter().copied() {
+                state[ti][dely][delx] = None;
+                sals[ti][dely][delx].clear();
+                for (ny, nx) in self.g0[dely][delx].iter().copied() {
                     if state[ti][ny][nx].is_some() {
-                        sals[ti][ny][nx].insert((dy, dx));
+                        sals[ti][ny][nx].insert((dely, delx));
                     }
                 }
                 for y in 0..self.h {
@@ -4255,106 +4264,113 @@ impl Solver {
                     vals[ti][y][x] = false;
                 }
             }
-            for ti in 0..self.t {
-                for y in 0..self.h {
-                    for x in 0..self.w {
-                        if vals[ti][y][x] {
-                            if !(state[ti][y][x].is_none()) {
-                                debug!(ti, y ,x);
-                                debug_assert!(state[ti][y][x].is_none());
-                            }
-                        }
-                    }
-                }
-            }
-            let mut pillows = BTreeMap::new();
+            let mut pillars = vec![];
+            let mut pilfil = vec![false; self.t];
             {
                 let mut t0 = None;
                 let mut last = self.t - 1;
                 for ti in 0..self.t {
-                    if vals[ti][dy][dx] {
-                        if !(state[ti][dy][dx].is_none()) {
-                            debug!(ti, dy, dx);
-                            debug_assert!(state[ti][dy][dx].is_none());
-                        }
-                    }
-                    if t0.is_none() && vals[ti][dy][dx] {
+                    if t0.is_none() && vals[ti][dely][delx] {
                         t0 = Some(ti);
                     }
                     if t0.is_some() {
-                        for &(ny, nx) in self.g0[dy][dx].iter() {
+                        for &(ny, nx) in self.g0[dely][delx].iter() {
                             if sals[ti][ny][nx].len() != 1 {
                                 continue;
                             }
                             let &(ay, ax) = sals[ti][ny][nx].iter().next().unwrap();
-                            if (ay, ax) == (dy, dx) {
+                            if (ay, ax) == (dely, delx) {
                                 let ski = state[ti][ny][nx].unwrap();
                                 last.chmin(self.dues[ski]);
                             }
                         }
                     }
                     if let Some(ps) = t0 {
-                        let pd = if !vals[ti][dy][dx] {
-                            Some(min(last, ti - 1))
-                        } else if ti == self.t - 1 {
-                            Some(min(last, ti))
+                        let pd = if !vals[ti][dely][delx] {
+                            Some(ti - 1)
+                        } else if ti == self.t - 1 || ti == last {
+                            Some(ti)
                         } else {
                             None
                         };
                         if let Some(pd) = pd {
                             if cfg!(debug_assertions) {
                                 for tii in ps..=pd {
-                                    debug_assert!(state[tii][dy][dx].is_none());
+                                    debug_assert!(state[tii][dely][delx].is_none());
                                 }
                             }
-                            pillows
-                                .entry(ps)
-                                .or_insert(BTreeMap::new())
-                                .entry(pd)
-                                .or_insert(vec![])
-                                .push((dy, dx));
+                            if cfg!(debug_assertions) {
+                                for tii in ps..=pd {
+                                    debug_assert!(!pilfil[tii]);
+                                    pilfil[tii] = true;
+                                }
+                            }
+                            pillars.push((ps, pd));
                             t0 = None;
                             last = self.t - 1;
                         }
                     }
                 }
             }
-            let mut ad = None;
-            'pillow: for (gain_score, ki, s, d) in kis0.iter().copied().rev() {
-                debug_assert!(gain_score == d - s + 1);
-                if gain_score <= dscore {
-                    break;
-                }
-                if let Some((_, dmp)) = pillows.less_equal(&s) {
-                    if let Some((_, vc)) = dmp.greater_equal(&d) {
-                        let (y, x) = vc[rand.next_usize() % vc.len()];
-                        ad = Some((ki, s, d, y, x));
-                        break 'pillow;
-                    }
-                }
+            let mut seed = vec![vec![]; self.t];
+            for (_, ki, s, d) in kis0.iter().copied() {
+                debug_assert!(s < d);
+                seed[s].push((ki, d));
             }
-            if cfg!(debug_assertions) {
-                let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
-                for &(ki, y, x, s) in ans.iter() {
-                    let d = self.dues[ki];
-                    for ti in s..=d {
-                        debug_assert!(dstate[ti][y][x].is_none());
-                        dstate[ti][y][x] = Some(ki);
-                    }
-                }
-            }
-            if let Some((ki, s, d, ay, ax)) = ad {
-                eprintln!("{}", (d - s + 1) as i64 - (dd - ds + 1) as i64);
-                for ti in s..=d {
-                    debug_assert!(state[ti][ay][ax].is_none());
-                    state[ti][ay][ax] = Some(ki);
-                    for (ny, nx) in self.g0[dy][dx].iter().copied() {
-                        if state[ti][ny][nx].is_none() {
-                            sals[ti][ay][ax].insert((ny, nx));
-                        } else {
-                            sals[ti][ny][nx].remove(&(ay, ax));
+            let mut ads = vec![];
+            let mut ascore = 0;
+            let mut dp = vec![0; self.t];
+            let mut pre = vec![None; self.t];
+            for (ps, pd) in pillars {
+                for ti in ps..=pd {
+                    let pval = if ti == ps {
+                        0
+                    } else {
+                        dp[ti - 1]
+                    };
+                    for (ki, d) in seed[ti].iter().copied() {
+                        let s = ti;
+                        debug_assert!(s < d);
+                        if s < ps || pd < d {
+                            continue;
+                        }
+                        if dp[d].chmax(pval + d - s + 1) {
+                            pre[d] = Some((ki, s, d));
                         }
                     }
+                    if ti > ps && dp[ti].chmax(pval) {
+                        let v = pre[ti - 1];
+                        pre[ti] = v;
+                    }
+                }
+                let mut ti = pd;
+                while let Some((ki, pre_ti, d)) = pre[ti] {
+                    ads.push((ki, pre_ti, d));
+                    ascore += d - pre_ti + 1;
+                    //
+                    if pre_ti == ps {
+                        break;
+                    }
+                    ti = pre_ti - 1;
+                }
+            }
+            if ascore > dscore {
+                eprintln!("{}", lc);
+                let (ay, ax) = (dely, delx);
+                for (ki, s, d) in ads.iter().copied() {
+                    for ti in s..=d {
+                        debug_assert!(state[ti][ay][ax].is_none());
+                        state[ti][ay][ax] = Some(ki);
+                        for (ny, nx) in self.g0[dely][delx].iter().copied() {
+                            if state[ti][ny][nx].is_none() {
+                                sals[ti][ay][ax].insert((ny, nx));
+                            } else {
+                                sals[ti][ny][nx].remove(&(ay, ax));
+                            }
+                        }
+                    }
+                }
+                for ti in 0..self.t {
                     links[ti] = LowLink::new(self.h * self.w + 1);
                     links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
                     for y in 0..self.h {
@@ -4378,14 +4394,39 @@ impl Solver {
                         vals[ti][y][x] = false;
                     }
                 }
-                let olen = ans.len();
-                assert!(ans.remove(&(dki, dy, dx, ds)));
-                assert!(ans.insert((ki, ay, ax, s)));
-                debug_assert!(olen == ans.len());
-                assert!(kis0.insert((dd - ds + 1, dki, ds, dd)));
-                assert!(kis0.remove(&(d - s + 1, ki, s, d)));
-                assert!(kis1.remove(&(dki, ds, dd, dy, dx)));
-                assert!(kis1.insert((ki, s, d, ay, ax)));
+                //if cfg!(debug_assertions) {
+                    //for (ki1, y, x, s1) in ans.iter().copied() {
+                        //let d1 = self.dues[ki1];
+                        //debug_assert!(kis1.contains(&(ki1, s1, d1, y, x)));
+                        //debug_assert!(!kis0.contains(&(d1 - s1 + 1, d1, s1, d1)));
+                    //}
+                    //for (_, ki0, s0, d0) in kis0.iter().copied() {
+                        //for (ki1, s1, d1, _y, _x) in kis1.iter().copied() {
+                            //debug_assert!((ki0, s0, d0) != (ki1, s1, d1));
+                        //}
+                        //for (ki1, _y, _x, s1) in ans.iter().copied() {
+                            //let d1 = self.dues[ki1];
+                            //debug_assert!((ki0, s0, d0) != (ki1, s1, d1));
+                        //}
+                    //}
+                    //for (ki1, s1, d1, y, x) in kis1.iter().copied() {
+                        //for (_, ki0, s0, d0) in kis0.iter().copied() {
+                            //debug_assert!((ki0, s0, d0) != (ki1, s1, d1));
+                        //}
+                        //debug_assert!(ans.contains(&(ki1, y, x, s1)));
+                    //}
+                //}
+                for (dki, ds) in dels {
+                    let ddue = self.dues[dki];
+                    assert!(ans.remove(&(dki, dely, delx, ds)));
+                    assert!(kis0.insert((ddue - ds + 1, dki, ds, ddue)));
+                    assert!(kis1.remove(&(dki, ds, ddue, dely, delx)));
+                }
+                for (ki, s, d) in ads.iter().copied() {
+                    assert!(kis0.remove(&(d - s + 1, ki, s, d)));
+                    assert!(ans.insert((ki, ay, ax, s)));
+                    assert!(kis1.insert((ki, s, d, ay, ax)));
+                }
                 if cfg!(debug_assertions) {
                     let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
                     for &(ki, y, x, s) in ans.iter() {
@@ -4411,41 +4452,44 @@ impl Solver {
                     }
                 }
             } else {
-                for ti in ds..=dd {
-                    state[ti][dy][dx] = Some(dki);
-                    for (ny, nx) in self.g0[dy][dx].iter().copied() {
-                        if state[ti][ny][nx].is_none() {
-                            sals[ti][dy][dx].insert((ny, nx));
-                        } else {
-                            sals[ti][ny][nx].remove(&(dy, dx));
+                for (dki, ds) in dels {
+                    let dd = self.dues[dki];
+                    for ti in ds..=dd {
+                        state[ti][dely][delx] = Some(dki);
+                        for (ny, nx) in self.g0[dely][delx].iter().copied() {
+                            if state[ti][ny][nx].is_none() {
+                                sals[ti][dely][delx].insert((ny, nx));
+                            } else {
+                                sals[ti][ny][nx].remove(&(dely, delx));
+                            }
                         }
-                    }
-                    debug_assert!(state0[ti] == state[ti]);
-                    debug_assert!(sals0[ti] == sals[ti]);
+                        debug_assert!(state0[ti] == state[ti]);
+                        debug_assert!(sals0[ti] == sals[ti]);
 
-                    links[ti] = LowLink::new(self.h * self.w + 1);
-                    links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
-                    for y in 0..self.h {
-                        for x in 0..self.w {
-                            if state[ti][y][x].is_none() {
-                                for (ny, nx) in self.g0[y][x].iter().copied() {
-                                    if state[ti][ny][nx].is_none() {
-                                        links[ti].unite(y * self.w + x, ny * self.w + nx);
+                        links[ti] = LowLink::new(self.h * self.w + 1);
+                        links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
+                        for y in 0..self.h {
+                            for x in 0..self.w {
+                                if state[ti][y][x].is_none() {
+                                    for (ny, nx) in self.g0[y][x].iter().copied() {
+                                        if state[ti][ny][nx].is_none() {
+                                            links[ti].unite(y * self.w + x, ny * self.w + nx);
+                                        }
                                     }
                                 }
+                                vals[ti][y][x] = state[ti][y][x].is_none();
                             }
-                            vals[ti][y][x] = state[ti][y][x].is_none();
                         }
-                    }
-                    for yx in links[ti].calc_articulations() {
-                        if yx >= self.h * self.w {
-                            continue;
+                        for yx in links[ti].calc_articulations() {
+                            if yx >= self.h * self.w {
+                                continue;
+                            }
+                            let y = yx / self.w;
+                            let x = yx % self.w;
+                            vals[ti][y][x] = false;
                         }
-                        let y = yx / self.w;
-                        let x = yx % self.w;
-                        vals[ti][y][x] = false;
+                        debug_assert!(vals0[ti] == vals[ti]);
                     }
-                    debug_assert!(vals0[ti] == vals[ti]);
                 }
             }
             if cfg!(debug_assertions) {
@@ -4459,7 +4503,7 @@ impl Solver {
                 }
             }
         }
-        eprintln!("{}", lc);
+        eprintln!("tot {}", lc);
         let ans = ans.into_iter().collect::<Vec<_>>();
         self.answer(&ans);
     }
