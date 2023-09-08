@@ -3999,8 +3999,8 @@ impl Solver {
                     let delta = (bfs_tree.depth[ty][tx] as i64 - dc as i64).abs();
                     let eval = (
                         if due == self.t - 1 { 0 } else { 1 },
-                        due_min - due,
                         self.wall[ty][tx],
+                        due_min - due,
                         delta,
                     );
                     if delta_min.chmin(eval) {
