@@ -3424,6 +3424,7 @@ fn xor_basis(a: &[usize]) -> Vec<usize> {
 mod low_link {
     use std::env::args;
 
+    #[derive(Clone)]
     pub struct LowLink {
         g: Vec<Vec<usize>>,
     }
@@ -4130,6 +4131,336 @@ impl Solver {
         let mut salvages = vec![vec![BTreeSet::new(); self.w]; self.h];
         let mut filled_due = vec![vec![None; self.w]; self.h];
         let (_, ans) = self.grow(0, &bfs_tree, &mut salvages, &mut filled_due, true);
+        let mut ans = ans
+            .into_iter()
+            .collect::<BTreeSet<(usize, usize, usize, usize)>>();
+
+        let mut state = vec![vec![vec![None; self.w]; self.h]; self.t];
+        let mut links = vec![LowLink::new(self.h * self.w + 1); self.t];
+        let mut vals = vec![vec![vec![true; self.w]; self.h]; self.t];
+        let mut sals = vec![vec![vec![BTreeSet::new(); self.w]; self.h]; self.t];
+        let mut kis0 = BTreeSet::new();
+        for s in 0..self.t {
+            for (ki, d) in self.crops[s].iter().copied() {
+                kis0.insert((d - s + 1, ki, s, d));
+            }
+        }
+        let mut kis1 = BTreeSet::new();
+        for &(ki, y, x, s) in ans.iter() {
+            let d = self.dues[ki];
+            assert!(kis0.remove(&(d - s + 1, ki, s, d)));
+            assert!(kis1.insert((ki, s, d, y, x)));
+            for ti in s..=d {
+                debug_assert!(state[ti][y][x].is_none());
+                state[ti][y][x] = Some(ki);
+            }
+        }
+        if cfg!(debug_assertions) {
+            let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
+            for &(ki, y, x, s) in ans.iter() {
+                let d = self.dues[ki];
+                debug_assert!(!kis0.contains(&(d - s + 1, ki, s, d)));
+                debug_assert!(kis1.contains(&(ki, s, d, y, x)));
+                for ti in s..=d {
+                    debug_assert!(dstate[ti][y][x].is_none());
+                    dstate[ti][y][x] = Some(ki);
+                }
+            }
+            debug_assert!(dstate == state);
+        }
+        for ti in 0..self.t {
+            links[ti] = LowLink::new(self.h * self.w + 1);
+            links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
+            for y in 0..self.h {
+                for x in 0..self.w {
+                    if state[ti][y][x].is_some() {
+                        for (ny, nx) in self.g0[y][x].iter().copied() {
+                            if state[ti][ny][nx].is_none() {
+                                sals[ti][y][x].insert((ny, nx));
+                            }
+                        }
+                    } else {
+                        for (ny, nx) in self.g0[y][x].iter().copied() {
+                            if state[ti][ny][nx].is_none() {
+                                links[ti].unite(y * self.w + x, ny * self.w + nx);
+                            }
+                        }
+                    }
+                    vals[ti][y][x] = state[ti][y][x].is_none();
+                }
+            }
+            for yx in links[ti].calc_articulations() {
+                if yx >= self.h * self.w {
+                    continue;
+                }
+                let y = yx / self.w;
+                let x = yx % self.w;
+                vals[ti][y][x] = false;
+            }
+        }
+        let mut rand = XorShift64::new();
+        let mut lc = 0;
+        while self.time0.elapsed().as_millis() < 1800 {
+            lc += 1;
+            debug!(lc);
+            let del_i = rand.next_usize() % kis1.len();
+            let &(dki, ds, dd, dy, dx) = kis1
+                .iter()
+                .enumerate()
+                .filter_map(|x| if x.0 == del_i { Some(x.1) } else { None })
+                .collect::<Vec<_>>()[0];
+            let dscore = dd - ds + 1;
+
+            let state0 = state.clone();
+            let sals0 = sals.clone();
+            let vals0 = vals.clone();
+            for ti in ds..=dd {
+                vals[ti] = vec![vec![true; self.w]; self.h];
+                links[ti] = LowLink::new(self.h * self.w + 1);
+                links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
+
+                state[ti][dy][dx] = None;
+                sals[ti][dy][dx].clear();
+                for (ny, nx) in self.g0[dy][dx].iter().copied() {
+                    if state[ti][ny][nx].is_some() {
+                        sals[ti][ny][nx].insert((dy, dx));
+                    }
+                }
+                for y in 0..self.h {
+                    for x in 0..self.w {
+                        if state[ti][y][x].is_some() {
+                            continue;
+                        }
+                        for (ny, nx) in self.g0[y][x].iter().copied() {
+                            if state[ti][ny][nx].is_some() {
+                                continue;
+                            }
+                            links[ti].unite(y * self.w + x, ny * self.w + nx);
+                        }
+                    }
+                }
+                for y in 0..self.h {
+                    for x in 0..self.w {
+                        vals[ti][y][x] = state[ti][y][x].is_none();
+                    }
+                }
+                for yx in links[ti].calc_articulations() {
+                    if yx >= self.h * self.w {
+                        continue;
+                    }
+                    let y = yx / self.w;
+                    let x = yx % self.w;
+                    debug_assert!(vals[ti][y][x]);
+                    debug_assert!(state[ti][y][x].is_none());
+                    vals[ti][y][x] = false;
+                }
+            }
+            for ti in 0..self.t {
+                for y in 0..self.h {
+                    for x in 0..self.w {
+                        if vals[ti][y][x] {
+                            if !(state[ti][y][x].is_none()) {
+                                debug!(ti, y ,x);
+                                debug_assert!(state[ti][y][x].is_none());
+                            }
+                        }
+                    }
+                }
+            }
+            let mut pillows = BTreeMap::new();
+            {
+                let mut t0 = None;
+                let mut last = self.t - 1;
+                for ti in 0..self.t {
+                    if vals[ti][dy][dx] {
+                        if !(state[ti][dy][dx].is_none()) {
+                            debug!(ti, dy, dx);
+                            debug_assert!(state[ti][dy][dx].is_none());
+                        }
+                    }
+                    if t0.is_none() && vals[ti][dy][dx] {
+                        t0 = Some(ti);
+                    }
+                    if t0.is_some() {
+                        for &(ny, nx) in self.g0[dy][dx].iter() {
+                            if sals[ti][ny][nx].len() != 1 {
+                                continue;
+                            }
+                            let &(ay, ax) = sals[ti][ny][nx].iter().next().unwrap();
+                            if (ay, ax) == (dy, dx) {
+                                let ski = state[ti][ny][nx].unwrap();
+                                last.chmin(self.dues[ski]);
+                            }
+                        }
+                    }
+                    if let Some(ps) = t0 {
+                        let pd = if !vals[ti][dy][dx] {
+                            Some(min(last, ti - 1))
+                        } else if ti == self.t - 1 {
+                            Some(min(last, ti))
+                        } else {
+                            None
+                        };
+                        if let Some(pd) = pd {
+                            if cfg!(debug_assertions) {
+                                for tii in ps..=pd {
+                                    debug_assert!(state[tii][dy][dx].is_none());
+                                }
+                            }
+                            pillows
+                                .entry(ps)
+                                .or_insert(BTreeMap::new())
+                                .entry(pd)
+                                .or_insert(vec![])
+                                .push((dy, dx));
+                            t0 = None;
+                            last = self.t - 1;
+                        }
+                    }
+                }
+            }
+            let mut ad = None;
+            'pillow: for (gain_score, ki, s, d) in kis0.iter().copied().rev() {
+                debug_assert!(gain_score == d - s + 1);
+                if gain_score <= dscore {
+                    break;
+                }
+                if let Some((_, dmp)) = pillows.less_equal(&s) {
+                    if let Some((_, vc)) = dmp.greater_equal(&d) {
+                        let (y, x) = vc[rand.next_usize() % vc.len()];
+                        ad = Some((ki, s, d, y, x));
+                        break 'pillow;
+                    }
+                }
+            }
+            if cfg!(debug_assertions) {
+                let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
+                for &(ki, y, x, s) in ans.iter() {
+                    let d = self.dues[ki];
+                    for ti in s..=d {
+                        debug_assert!(dstate[ti][y][x].is_none());
+                        dstate[ti][y][x] = Some(ki);
+                    }
+                }
+            }
+            if let Some((ki, s, d, ay, ax)) = ad {
+                eprintln!("{}", (d - s + 1) as i64 - (dd - ds + 1) as i64);
+                for ti in s..=d {
+                    debug_assert!(state[ti][ay][ax].is_none());
+                    state[ti][ay][ax] = Some(ki);
+                    for (ny, nx) in self.g0[dy][dx].iter().copied() {
+                        if state[ti][ny][nx].is_none() {
+                            sals[ti][ay][ax].insert((ny, nx));
+                        } else {
+                            sals[ti][ny][nx].remove(&(ay, ax));
+                        }
+                    }
+                    links[ti] = LowLink::new(self.h * self.w + 1);
+                    links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
+                    for y in 0..self.h {
+                        for x in 0..self.w {
+                            if state[ti][y][x].is_none() {
+                                for (ny, nx) in self.g0[y][x].iter().copied() {
+                                    if state[ti][ny][nx].is_none() {
+                                        links[ti].unite(y * self.w + x, ny * self.w + nx);
+                                    }
+                                }
+                            }
+                            vals[ti][y][x] = state[ti][y][x].is_none();
+                        }
+                    }
+                    for yx in links[ti].calc_articulations() {
+                        if yx >= self.h * self.w {
+                            continue;
+                        }
+                        let y = yx / self.w;
+                        let x = yx % self.w;
+                        vals[ti][y][x] = false;
+                    }
+                }
+                let olen = ans.len();
+                assert!(ans.remove(&(dki, dy, dx, ds)));
+                assert!(ans.insert((ki, ay, ax, s)));
+                debug_assert!(olen == ans.len());
+                assert!(kis0.insert((dd - ds + 1, dki, ds, dd)));
+                assert!(kis0.remove(&(d - s + 1, ki, s, d)));
+                assert!(kis1.remove(&(dki, ds, dd, dy, dx)));
+                assert!(kis1.insert((ki, s, d, ay, ax)));
+                if cfg!(debug_assertions) {
+                    let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
+                    for &(ki, y, x, s) in ans.iter() {
+                        let d = self.dues[ki];
+                        debug_assert!(!kis0.contains(&(d - s + 1, ki, s, d)));
+                        debug_assert!(kis1.contains(&(ki, s, d, y, x)));
+                        for ti in s..=d {
+                            debug_assert!(dstate[ti][y][x].is_none());
+                            dstate[ti][y][x] = Some(ki);
+                        }
+                    }
+                    for ti in 0..self.t {
+                        for y in 0..self.h {
+                            for x in 0..self.w {
+                                if !(dstate[ti][y][x] == state[ti][y][x]) {
+                                    debug!(ti, y, x);
+                                    debug!(state[ti][y][x].is_some());
+                                    debug!(dstate[ti][y][x].is_some());
+                                    debug_assert!(dstate[ti][y][x] == state[ti][y][x]);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                for ti in ds..=dd {
+                    state[ti][dy][dx] = Some(dki);
+                    for (ny, nx) in self.g0[dy][dx].iter().copied() {
+                        if state[ti][ny][nx].is_none() {
+                            sals[ti][dy][dx].insert((ny, nx));
+                        } else {
+                            sals[ti][ny][nx].remove(&(dy, dx));
+                        }
+                    }
+                    debug_assert!(state0[ti] == state[ti]);
+                    debug_assert!(sals0[ti] == sals[ti]);
+
+                    links[ti] = LowLink::new(self.h * self.w + 1);
+                    links[ti].unite(self.y0 * self.w + self.x0, self.h * self.w);
+                    for y in 0..self.h {
+                        for x in 0..self.w {
+                            if state[ti][y][x].is_none() {
+                                for (ny, nx) in self.g0[y][x].iter().copied() {
+                                    if state[ti][ny][nx].is_none() {
+                                        links[ti].unite(y * self.w + x, ny * self.w + nx);
+                                    }
+                                }
+                            }
+                            vals[ti][y][x] = state[ti][y][x].is_none();
+                        }
+                    }
+                    for yx in links[ti].calc_articulations() {
+                        if yx >= self.h * self.w {
+                            continue;
+                        }
+                        let y = yx / self.w;
+                        let x = yx % self.w;
+                        vals[ti][y][x] = false;
+                    }
+                    debug_assert!(vals0[ti] == vals[ti]);
+                }
+            }
+            if cfg!(debug_assertions) {
+                let mut dstate = vec![vec![vec![None; self.w]; self.h]; self.t];
+                for &(ki, y, x, s) in ans.iter() {
+                    let d = self.dues[ki];
+                    for ti in s..=d {
+                        debug_assert!(dstate[ti][y][x].is_none());
+                        dstate[ti][y][x] = Some(ki);
+                    }
+                }
+            }
+        }
+        eprintln!("{}", lc);
+        let ans = ans.into_iter().collect::<Vec<_>>();
         self.answer(&ans);
     }
 }
